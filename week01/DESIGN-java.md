@@ -1,6 +1,6 @@
 # 第一周作业设计方案（Java 版）：LLM 统一模型调用服务
 
-> 状态：待实现。
+> 状态：已实现并验证（2026-09-02）。
 > 本方案面向 Java 后端背景，采用 Spring Boot WebFlux + WebClient + Reactor。
 
 ## 1. 技术选型
@@ -318,3 +318,12 @@ README 提供 curl 示例：
 - 课程是否强制 Python；如果强制，本方案只能作为概念参照
 - 是否允许真实 API Key，还是先用 MockWebServer 验收
 - DeepSeek 的 Anthropic Messages API 地址和字段是否与 Anthropic 官方一致
+
+## 16. 踩坑与修复记录（2026-09-02）
+
+| 现象 | 根因 | 修复 |
+|------|------|------|
+| `/v1/chat` 返回 `500 internal_error` | 熔断打开后 `ModelRouter.candidates()` 在 `doChat` 里同步抛异常，绕过 `onErrorResume` 归一化 | 在 `GatewayService.chat()/stream()` 最外层加 `onErrorResume(normalize)` |
+| 非流式 `/v1/chat` 返回 `text/event-stream` + 空 body + `UnsupportedOperationException` | `@RestController` 返回 `Mono<ServerResponse>`（函数式风格），Spring 当普通对象 JSON 序列化失败，且响应已提交无法写错误头 | 改为返回 `Mono<ResponseEntity<?>>` |
+| 结构化输出 `parsed` 恒为 `null` | Jackson 默认不映射 `response_format`→`responseFormat`，schema 被静默丢弃（verify 脚本 `grep "parsed"` 是假阳性） | `ChatRequest` 加 `@JsonProperty("response_format"/"max_tokens"/"top_p"/"timeout_seconds")` |
+| `git push` 报 `remote-https is not a git command` | conda base 自带的 git 缺少 remote-https 组件 | 切系统 git 或 `alias git=/usr/bin/git` |
