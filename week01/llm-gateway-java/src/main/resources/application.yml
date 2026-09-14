@@ -9,6 +9,8 @@ server:
 
 llm:
   service-name: llm-gateway-java
+  # 留空仅内存；生产可指向挂载卷，重启后用量账本与 Run 事件可恢复。
+  data-dir: ${LLM_GATEWAY_DATA_DIR:./data}
   # 留空表示不校验调用方；生产环境请设置 GATEWAY_API_KEY。
   api-keys:
     - ${GATEWAY_API_KEY:}

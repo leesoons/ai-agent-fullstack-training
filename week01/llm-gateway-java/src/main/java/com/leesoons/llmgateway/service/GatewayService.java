@@ -9,6 +9,7 @@ import com.leesoons.llmgateway.config.GatewayProperties;
 import com.leesoons.llmgateway.core.GatewayErrorCode;
 import com.leesoons.llmgateway.core.GatewayException;
 import com.leesoons.llmgateway.core.PerModelRateLimiter;
+import com.leesoons.llmgateway.core.PerIdentityRateLimiter;
 import com.leesoons.llmgateway.core.StructuredOutputException;
 import com.leesoons.llmgateway.core.UpstreamException;
 import com.leesoons.llmgateway.model.ChatMessage;
@@ -33,6 +34,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.Optional;
 
 /**
  * 网关编排核心：统一请求 -> 限流 -> Prompt 渲染 -> 路由 -> Adapter -> 重试/回退 -> 结构化校验。
@@ -45,22 +47,28 @@ public class GatewayService {
     private final PromptService prompts;
     private final UsageService usage;
     private final PerModelRateLimiter rateLimiter;
+    private final PerIdentityRateLimiter identityLimiter;
     private final StructuredOutputService structured;
     private final Map<AdapterProtocol, LlmAdapter> adapters;
+    private final StructuredOutputCache cache;
 
     public GatewayService(GatewayProperties config,
                           ModelRouter router,
                           PromptService prompts,
                           UsageService usage,
                           PerModelRateLimiter rateLimiter,
+                          PerIdentityRateLimiter identityLimiter,
                           StructuredOutputService structured,
-                          List<LlmAdapter> adapterList) {
+                          List<LlmAdapter> adapterList,
+                          StructuredOutputCache cache) {
         this.config = config;
         this.router = router;
         this.prompts = prompts;
         this.usage = usage;
         this.rateLimiter = rateLimiter;
+        this.identityLimiter = identityLimiter;
         this.structured = structured;
+        this.cache = cache;
         this.adapters = new LinkedHashMap<>();
         for (LlmAdapter adapter : adapterList) {
             this.adapters.put(adapter.protocol(), adapter);
@@ -68,17 +76,27 @@ public class GatewayService {
     }
 
     public Mono<ChatResponse> chat(ChatRequest request, String identity) {
+        return chat(request, identity, "chat", TraceContext.none());
+    }
+
+    public Mono<ChatResponse> chat(ChatRequest request, String identity, String api, TraceContext trace) {
         String model = request.getModel();
-        return rateLimiter.acquire(model)
+        return identityLimiter.acquire(identity)
+                .then(rateLimiter.acquire(model))
                 .then(Mono.fromCallable(() -> prepare(request)))
-                .flatMap(prepared -> doChat(prepared, identity))
+                .flatMap(prepared -> doChat(prepared, identity, api, trace))
                 .onErrorResume(error -> Mono.error(normalize(error)));
     }
 
     public Flux<ServerSentEvent<StreamEvent>> stream(ChatRequest request, String identity) {
+        return stream(request, identity, "chat", TraceContext.none());
+    }
+
+    public Flux<ServerSentEvent<StreamEvent>> stream(ChatRequest request, String identity, String api, TraceContext trace) {
         String model = request.getModel();
-        return rateLimiter.acquire(model)
-                .thenMany(Flux.defer(() -> doStream(prepare(request), identity)))
+        return identityLimiter.acquire(identity)
+                .then(rateLimiter.acquire(model))
+                .thenMany(Flux.defer(() -> doStream(prepare(request), identity, api, trace)))
                 .onErrorResume(error -> Flux.error(normalize(error)));
     }
 
@@ -86,19 +104,30 @@ public class GatewayService {
     // 非流式
     // ------------------------------------------------------------------
 
-    private Mono<ChatResponse> doChat(Prepared prepared, String identity) {
+    private Mono<ChatResponse> doChat(Prepared prepared, String identity, String api, TraceContext trace) {
         String requestId = "req_" + UUID.randomUUID().toString().replace("-", "");
         long started = System.nanoTime();
-        UsageEvent event = newUsageEvent(prepared, identity, requestId, false);
-        List<GatewayProperties.RouteTarget> candidates = router.candidates(prepared.request().getModel());
+        UsageEvent event = newUsageEvent(prepared, identity, requestId, false, trace);
+        List<GatewayProperties.RouteTarget> candidates = router.candidates(prepared.request().getModel(), api);
 
         AtomicReference<ChatRequest> working = new AtomicReference<>(prepared.request());
         AtomicInteger structuredAttempt = new AtomicInteger(0);
         JsonNode schema = prepared.schema();
+        // 缓存键绑定客户端原始请求：修复/修复指令等网关派生内容不应改变键，
+        // 否则同一逻辑请求修复失败时无法命中之前校验通过的缓存。
+        String cacheKey = cache.key(identity, prepared.clientRequest(), schema);
 
         return callJsonWithStructured(candidates, working, schema, structuredAttempt, event)
+                .doOnNext(result -> cacheValidated(cacheKey, schema, result))
                 .map(result -> buildChatResponse(result, event, started))
                 .onErrorResume(error -> {
+                    if (error instanceof StructuredOutputException && schema != null) {
+                        Optional<StructuredOutputCache.Entry> cached =
+                                cache.get(cacheKey);
+                        if (cached.isPresent()) {
+                            return Mono.just(buildDegradedResponse(identity, event, started, cached.get()));
+                        }
+                    }
                     finalizeError(event, error, started);
                     return Mono.<ChatResponse>error(normalize(error));
                 });
@@ -204,6 +233,41 @@ public class GatewayService {
         response.setFallbacks(event.getFallbacks());
         response.setProvider(result.route.getProvider());
         response.setUpstreamModel(result.route.getModel());
+        response.setSource("model");
+        return response;
+    }
+
+    private void cacheValidated(String cacheKey, JsonNode schema, RouteResult result) {
+        if (schema == null || result.response.getParsed() == null) {
+            return;
+        }
+        cache.put(cacheKey, result.response.getContent(), result.response.getParsed());
+    }
+
+    private ChatResponse buildDegradedResponse(String identity, UsageEvent event, long started,
+                                               StructuredOutputCache.Entry cached) {
+        event.setStatus("degraded");
+        event.setStatusCode(200);
+        event.setLatencyMs(elapsedMillis(started));
+        if (event.getUpstreamModel() != null) {
+            event.setCostUsd(usage.calculateCost(event.getUpstreamModel(),
+                    event.getInputTokens(), event.getOutputTokens(), event.getCachedTokens()));
+        }
+        usage.record(event);
+
+        ChatResponse response = new ChatResponse();
+        response.setRequestId(event.getRequestId());
+        response.setModel(event.getRequestedModel());
+        response.setContent(cached.content());
+        response.setParsed(cached.parsed());
+        response.setSource("cache");
+        response.setUsage(new TokenUsage(0, 0, 0));
+        response.setLatencyMs((long) event.getLatencyMs());
+        response.setAttempts(1 + event.getRetries());
+        response.setRetries(event.getRetries());
+        response.setFallbacks(event.getFallbacks());
+        response.setProvider(event.getProvider());
+        response.setUpstreamModel(event.getUpstreamModel());
         return response;
     }
 
@@ -211,11 +275,11 @@ public class GatewayService {
     // 流式
     // ------------------------------------------------------------------
 
-    private Flux<ServerSentEvent<StreamEvent>> doStream(Prepared prepared, String identity) {
+    private Flux<ServerSentEvent<StreamEvent>> doStream(Prepared prepared, String identity, String api, TraceContext trace) {
         String requestId = "req_" + UUID.randomUUID().toString().replace("-", "");
         long started = System.nanoTime();
-        UsageEvent event = newUsageEvent(prepared, identity, requestId, true);
-        List<GatewayProperties.RouteTarget> candidates = router.candidates(prepared.request().getModel());
+        UsageEvent event = newUsageEvent(prepared, identity, requestId, true, trace);
+        List<GatewayProperties.RouteTarget> candidates = router.candidates(prepared.request().getModel(), api);
 
         AtomicBoolean emitted = new AtomicBoolean(false);
 
@@ -314,6 +378,8 @@ public class GatewayService {
     // ------------------------------------------------------------------
 
     private Prepared prepare(ChatRequest request) {
+        // 客户端原始请求快照：缓存键基于它计算，不含网关注入的 schema 指令/渲染的 system 消息。
+        ChatRequest clientRequest = copy(request);
         ChatRequest prepared = copy(request);
 
         String promptId = null;
@@ -335,7 +401,7 @@ public class GatewayService {
         if (schema != null) {
             prepared.getMessages().add(0, new ChatMessage("system", structured.instructionFor(schema)));
         }
-        return new Prepared(prepared, promptId, promptVersion, schema);
+        return new Prepared(prepared, clientRequest, promptId, promptVersion, schema);
     }
 
     private ChatRequest copy(ChatRequest source) {
@@ -364,10 +430,14 @@ public class GatewayService {
     // 事件与用量
     // ------------------------------------------------------------------
 
-    private UsageEvent newUsageEvent(Prepared prepared, String identity, String requestId, boolean stream) {
+    private UsageEvent newUsageEvent(Prepared prepared, String identity, String requestId, boolean stream,
+                                     TraceContext trace) {
         UsageEvent event = new UsageEvent();
         event.setRequestId(requestId);
         event.setApiKeyHash(identity);
+        event.setRunId(trace.runId());
+        event.setStepId(trace.stepId());
+        event.setCallId(requestId);
         event.setRequestedModel(prepared.request().getModel());
         event.setStream(stream);
         event.setPromptId(prepared.promptId());
@@ -478,7 +548,8 @@ public class GatewayService {
                 HttpStatus.BAD_GATEWAY, false, null);
     }
 
-    private record Prepared(ChatRequest request, String promptId, Integer promptVersion, JsonNode schema) {
+    private record Prepared(ChatRequest request, ChatRequest clientRequest,
+                            String promptId, Integer promptVersion, JsonNode schema) {
     }
 
     private static final class RouteResult {

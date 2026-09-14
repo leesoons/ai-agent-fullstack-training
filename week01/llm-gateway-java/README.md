@@ -156,6 +156,28 @@ curl -s http://localhost:8000/v1/chat \
 curl -s http://localhost:8000/admin/usage?limit=20 -H "Authorization: Bearer dev-key"
 ```
 
+### Run 事件缓冲与断点续传（1-3 扩展）
+
+参照 Python `1-3` 的 run/checkpoint 语义新增三个端点，事件先落内存缓冲，订阅者可携带 `Last-Event-ID` 从任意断点续读，不重复也不漏事件：
+
+```bash
+# 1. 创建 Run：立即在后台订阅上游流，事件按 seq 写入内存缓冲
+curl -s -X POST http://localhost:8000/v1/runs \
+  -H "Authorization: Bearer dev-key" -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"写一首短诗"}]}'
+# => {"run_id":"run_xxx","status":"running"}
+
+# 2. 订阅事件：断线重连时浏览器会自动带 Last-Event-ID 请求头续读
+curl -N http://localhost:8000/v1/runs/run_xxx/events \
+  -H "Authorization: Bearer dev-key"
+
+# 3. 取消 Run：停止上游流，并补发一条 cancelled 终态事件
+curl -s -X POST http://localhost:8000/v1/runs/run_xxx/cancel \
+  -H "Authorization: Bearer dev-key"
+```
+
+实现位置：`run/RunEvent`、`run/RunState`（replay 缓冲 + 终态门禁）、`service/RunService`（Run 生命周期）、`GatewayController`（三个端点）。
+
 ## 六大能力验收对照
 
 | 作业要求 | 实现位置 |
@@ -178,6 +200,7 @@ curl -s http://localhost:8000/admin/usage?limit=20 -H "Authorization: Bearer dev
 - 429 后的指数退避重试
 - 按模型限流返回 429
 - 未知模型返回 404
+- Run 事件缓冲、断点续读与终态（cancelled/completed）门禁
 
 ```bash
 mvn test

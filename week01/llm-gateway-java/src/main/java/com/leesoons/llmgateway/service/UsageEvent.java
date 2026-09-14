@@ -7,6 +7,9 @@ public class UsageEvent {
 
     private String requestId;
     private String apiKeyHash;
+    private String runId;
+    private String stepId;
+    private String callId;
     private String requestedModel;
     private String provider;
     private String upstreamModel;
@@ -40,6 +43,30 @@ public class UsageEvent {
 
     public void setApiKeyHash(String apiKeyHash) {
         this.apiKeyHash = apiKeyHash;
+    }
+
+    public String getRunId() {
+        return runId;
+    }
+
+    public void setRunId(String runId) {
+        this.runId = runId;
+    }
+
+    public String getStepId() {
+        return stepId;
+    }
+
+    public void setStepId(String stepId) {
+        this.stepId = stepId;
+    }
+
+    public String getCallId() {
+        return callId;
+    }
+
+    public void setCallId(String callId) {
+        this.callId = callId;
     }
 
     public String getRequestedModel() {

@@ -25,7 +25,7 @@ public class ModelRouter {
         this.config = config;
     }
 
-    public List<GatewayProperties.RouteTarget> candidates(String model) {
+    public List<GatewayProperties.RouteTarget> candidates(String model, String api) {
         GatewayProperties.ModelRoute routeConfig = config.getModels().get(model);
         if (routeConfig == null) {
             throw new GatewayException("Unknown model alias: " + model,
@@ -34,7 +34,9 @@ public class ModelRouter {
         List<GatewayProperties.RouteTarget> available = routeConfig.getRoutes().stream()
                 .filter(target -> {
                     GatewayProperties.Provider provider = config.getProviders().get(target.getProvider());
-                    return provider != null && provider.isEnabled() && isAvailable(target.getProvider());
+                    return provider != null && provider.isEnabled()
+                            && isAvailable(target.getProvider())
+                            && supportsApi(target.getApi(), api);
                 })
                 .toList();
         if (available.isEmpty()) {
@@ -60,6 +62,12 @@ public class ModelRouter {
 
     public void recordSuccess(String provider) {
         circuits.put(provider, new CircuitState());
+    }
+
+    private static boolean supportsApi(String routeApi, String requestedApi) {
+        return routeApi == null || routeApi.isBlank()
+                || "both".equalsIgnoreCase(routeApi)
+                || routeApi.equalsIgnoreCase(requestedApi);
     }
 
     public void recordFailure(String provider) {

@@ -1,11 +1,13 @@
 package com.leesoons.llmgateway;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.leesoons.llmgateway.adapter.AnthropicMessagesAdapter;
 import com.leesoons.llmgateway.adapter.LlmAdapter;
 import com.leesoons.llmgateway.adapter.OpenAiResponsesAdapter;
 import com.leesoons.llmgateway.config.GatewayProperties;
 import com.leesoons.llmgateway.core.GatewayException;
+import com.leesoons.llmgateway.core.PerIdentityRateLimiter;
 import com.leesoons.llmgateway.core.PerModelRateLimiter;
 import com.leesoons.llmgateway.model.ChatMessage;
 import com.leesoons.llmgateway.model.ChatRequest;
@@ -19,9 +21,11 @@ import com.leesoons.llmgateway.service.GatewayService;
 import com.leesoons.llmgateway.service.InMemoryPromptStore;
 import com.leesoons.llmgateway.service.ModelRouter;
 import com.leesoons.llmgateway.service.PromptService;
+import com.leesoons.llmgateway.service.StructuredOutputCache;
 import com.leesoons.llmgateway.service.StructuredOutputService;
 import com.leesoons.llmgateway.service.UpstreamClient;
 import com.leesoons.llmgateway.service.UsageService;
+import com.leesoons.llmgateway.service.TraceContext;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -122,6 +126,40 @@ class GatewayServiceTest {
             assertThat(resp.getParsed().get("name").asText()).isEqualTo("Ada");
             assertThat(resp.getRetries()).isEqualTo(1);
             assertThat(server.getRequestCount()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void structuredOutputDegradesToCacheWhenRepairExhausted() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start();
+            server.enqueue(jsonResponse("{\"output_text\":\"{\\\"name\\\":123}\"}"));
+            server.enqueue(jsonResponse("{\"output_text\":\"{\\\"name\\\":456}\"}"));
+
+            GatewayProperties cfg = openAiConfig(server);
+            cfg.setStructuredOutputRetries(1);
+            Harness h = harness(cfg);
+
+            ChatRequest request = req("deepseek-v4-pro", "Name");
+            JsonNode schema = mapper.readTree("""
+                    {"type":"object","properties":{"name":{"type":"string"}},
+                     "required":["name"],"additionalProperties":false}""");
+            ResponseFormat format = new ResponseFormat();
+            format.setType("json_schema");
+            format.setName("person");
+            format.setStrict(true);
+            format.setSchema(schema);
+            request.setResponseFormat(format);
+
+            JsonNode parsed = mapper.readTree("{\"name\":\"Cached Ada\"}");
+            h.cache().put(h.cache().key("test", request, schema), "{\"name\":\"Cached Ada\"}", parsed);
+
+            ChatResponse resp = h.gateway().chat(request, "test").block();
+
+            assertThat(resp.getSource()).isEqualTo("cache");
+            assertThat(resp.getParsed().get("name").asText()).isEqualTo("Cached Ada");
+            assertThat(server.getRequestCount()).isEqualTo(2);
+            assertThat(h.usage().recent(10).get(0).getStatus()).isEqualTo("degraded");
         }
     }
 
@@ -271,6 +309,30 @@ class GatewayServiceTest {
                 });
     }
 
+    @Test
+    void routeIsFilteredByExternalApiCapability() {
+        GatewayProperties cfg = baseConfig();
+        addProvider(cfg, "p", "http://localhost:1", "sk");
+        GatewayProperties.ModelRoute route = new GatewayProperties.ModelRoute();
+        GatewayProperties.RouteTarget target = new GatewayProperties.RouteTarget();
+        target.setProvider("p");
+        target.setModel("deepseek-v4-pro");
+        target.setProtocol("openai_responses");
+        target.setApi("chat");
+        route.setRoutes(List.of(target));
+        cfg.getModels().put("deepseek-v4-pro", route);
+        Harness h = harness(cfg);
+
+        assertThatThrownBy(() -> h.gateway()
+                .chat(req("deepseek-v4-pro", "hi"), "test", "responses", TraceContext.none())
+                .block())
+                .isInstanceOf(GatewayException.class)
+                .satisfies(error -> {
+                    GatewayException gateway = (GatewayException) error;
+                    assertThat(gateway.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                });
+    }
+
     // ------------------------------------------------------------------
     // 测试脚手架
     // ------------------------------------------------------------------
@@ -321,9 +383,12 @@ class GatewayServiceTest {
         PromptService prompts = new PromptService(new InMemoryPromptStore());
         UsageService usage = new UsageService(cfg);
         PerModelRateLimiter rateLimiter = new PerModelRateLimiter(cfg);
+        PerIdentityRateLimiter identityLimiter = new PerIdentityRateLimiter(cfg);
         StructuredOutputService structured = new StructuredOutputService(mapper);
-        GatewayService gateway = new GatewayService(cfg, router, prompts, usage, rateLimiter, structured, adapters);
-        return new Harness(gateway, prompts, usage, cfg);
+        StructuredOutputCache cache = new StructuredOutputCache();
+        GatewayService gateway = new GatewayService(cfg, router, prompts, usage, rateLimiter, identityLimiter,
+                structured, adapters, cache);
+        return new Harness(gateway, prompts, usage, cfg, cache);
     }
 
     private ChatRequest req(String model, String content) {
@@ -340,6 +405,7 @@ class GatewayServiceTest {
                 .setBody(body);
     }
 
-    private record Harness(GatewayService gateway, PromptService prompts, UsageService usage, GatewayProperties config) {
+    private record Harness(GatewayService gateway, PromptService prompts, UsageService usage,
+                           GatewayProperties config, StructuredOutputCache cache) {
     }
 }

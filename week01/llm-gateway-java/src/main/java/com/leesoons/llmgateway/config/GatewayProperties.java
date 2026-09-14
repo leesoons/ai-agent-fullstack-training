@@ -19,6 +19,8 @@ public class GatewayProperties {
     private String serviceName = "llm-gateway-java";
     private List<String> apiKeys = new ArrayList<>();
     private int structuredOutputRetries = 1;
+    /** 落盘目录；留空表示仅内存。用于用量账本与 Run 事件的可选持久化。 */
+    private String dataDir = "";
 
     private Retry retry = new Retry();
     private CircuitBreaker circuitBreaker = new CircuitBreaker();
@@ -34,6 +36,14 @@ public class GatewayProperties {
 
     public void setServiceName(String serviceName) {
         this.serviceName = serviceName;
+    }
+
+    public String getDataDir() {
+        return dataDir;
+    }
+
+    public void setDataDir(String dataDir) {
+        this.dataDir = dataDir;
     }
 
     public List<String> getApiKeys() {
@@ -270,6 +280,8 @@ public class GatewayProperties {
         private String model;
         /** 协议：openai_responses 或 anthropic_messages。 */
         private String protocol = "openai_responses";
+        /** 对外 API 能力：chat、responses 或 both。 */
+        private String api = "both";
         private int weight = 1;
 
         public String getProvider() {
@@ -294,6 +306,14 @@ public class GatewayProperties {
 
         public void setProtocol(String protocol) {
             this.protocol = protocol;
+        }
+
+        public String getApi() {
+            return api;
+        }
+
+        public void setApi(String api) {
+            this.api = api;
         }
 
         public int getWeight() {

@@ -43,13 +43,14 @@ resp=$(curl -s "$GATEWAY_URL/v1/chat" \
   -d '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"返回一个名字"}],"response_format":{"type":"json_schema","name":"person","strict":true,"schema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}')
 if echo "$resp" | grep -q '"parsed"'; then ok "结构化输出 -> $resp"; else fail "结构化输出 -> $resp"; fi
 
-# 7. Prompt 版本管理：创建 + 渲染 + 引用
+# 7. Prompt 版本管理：创建 + 渲染 + 引用（用唯一 id，保证脚本可重复执行）
+PROMPT_ID="verify-reviewer-$(date +%s)"
 create=$(curl -s -X POST "$GATEWAY_URL/v1/prompts" \
   -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" \
-  -d '{"id":"verify-reviewer","name":"verify","role":"system","content":"你是{{ lang }}审查助手","activate":true}')
+  -d '{"id":"'"$PROMPT_ID"'","name":"verify","role":"system","content":"你是{{ lang }}审查助手","activate":true}')
 if echo "$create" | grep -q '"version":1'; then ok "Prompt 创建 v1"; else fail "Prompt 创建 -> $create"; fi
 
-render=$(curl -s -X POST "$GATEWAY_URL/v1/prompts/verify-reviewer/render" \
+render=$(curl -s -X POST "$GATEWAY_URL/v1/prompts/$PROMPT_ID/render" \
   -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" \
   -d '{"variables":{"lang":"Java"}}')
 if echo "$render" | grep -q '你是Java审查助手'; then ok "Prompt 渲染"; else fail "Prompt 渲染 -> $render"; fi

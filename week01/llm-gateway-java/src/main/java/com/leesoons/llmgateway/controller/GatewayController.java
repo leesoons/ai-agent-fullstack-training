@@ -2,6 +2,8 @@ package com.leesoons.llmgateway.controller;
 
 import com.leesoons.llmgateway.config.GatewayProperties;
 import com.leesoons.llmgateway.core.ApiKeyAuthenticator;
+import com.leesoons.llmgateway.core.GatewayErrorCode;
+import com.leesoons.llmgateway.core.GatewayException;
 import com.leesoons.llmgateway.model.ChatRequest;
 import com.leesoons.llmgateway.model.ModelInfo;
 import com.leesoons.llmgateway.model.PromptCreate;
@@ -10,6 +12,7 @@ import com.leesoons.llmgateway.model.PromptRender;
 import com.leesoons.llmgateway.model.StreamEvent;
 import com.leesoons.llmgateway.service.GatewayService;
 import com.leesoons.llmgateway.service.PromptService;
+import com.leesoons.llmgateway.service.RunService;
 import com.leesoons.llmgateway.service.UsageEvent;
 import com.leesoons.llmgateway.service.UsageService;
 import jakarta.validation.Valid;
@@ -21,6 +24,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
@@ -41,19 +45,28 @@ public class GatewayController {
     private final PromptService promptService;
     private final UsageService usageService;
     private final GatewayProperties config;
+    private final RunService runService;
 
     public GatewayController(GatewayService gatewayService,
                              PromptService promptService,
                              UsageService usageService,
-                             GatewayProperties config) {
+                             GatewayProperties config,
+                             RunService runService) {
         this.gatewayService = gatewayService;
         this.promptService = promptService;
         this.usageService = usageService;
         this.config = config;
+        this.runService = runService;
     }
 
     @PostMapping("/v1/chat")
     public Mono<ResponseEntity<?>> chat(@Valid @RequestBody ChatRequest request, ServerWebExchange exchange) {
+        // 流式输出与结构化输出互斥：流式只转发增量文本，无法在结束时对完整 JSON 做 Schema 校验。
+        if (request.isStream() && request.getResponseFormat() != null) {
+            throw new GatewayException("stream 与 response_format 不能同时使用",
+                    HttpStatus.BAD_REQUEST, "invalid_request_error",
+                    GatewayErrorCode.INVALID_REQUEST, "response_format");
+        }
         String identity = identity(exchange);
         if (request.isStream()) {
             Flux<ServerSentEvent<StreamEvent>> stream = gatewayService.stream(request, identity);
@@ -66,6 +79,64 @@ public class GatewayController {
                 .map(response -> ResponseEntity.ok()
                         .header("X-Request-ID", response.getRequestId())
                         .body(response));
+    }
+
+    @PostMapping("/v1/runs")
+    public Mono<Map<String, Object>> createRun(@Valid @RequestBody ChatRequest request,
+                                               ServerWebExchange exchange) {
+        String identity = identity(exchange);
+        return Mono.fromCallable(() -> {
+            String runId = runService.create(request, identity);
+            Map<String, Object> result = new java.util.LinkedHashMap<>();
+            result.put("run_id", runId);
+            result.put("status", runService.status(runId, identity));
+            return result;
+        });
+    }
+
+    @GetMapping("/v1/runs/{runId}/events")
+    public Mono<ResponseEntity<Flux<ServerSentEvent<StreamEvent>>>> runEvents(
+            @PathVariable String runId,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId,
+            ServerWebExchange exchange) {
+        String identity = identity(exchange);
+        return Mono.defer(() -> {
+            int afterSeq = parseAfterSeq(lastEventId);
+            Flux<ServerSentEvent<StreamEvent>> events = runService.events(runId, afterSeq, identity)
+                    .map(event -> ServerSentEvent.<StreamEvent>builder(
+                                    new StreamEvent(event.type(), event.data()))
+                            .id(String.valueOf(event.seq()))
+                            .event(event.type())
+                            .build());
+            return Mono.just(ResponseEntity.ok()
+                    .header("Cache-Control", "no-cache, no-transform")
+                    .header("X-Accel-Buffering", "no")
+                    .contentType(MediaType.TEXT_EVENT_STREAM)
+                    .body(events));
+        });
+    }
+
+    @PostMapping("/v1/runs/{runId}/cancel")
+    public Mono<Map<String, Object>> cancelRun(@PathVariable String runId, ServerWebExchange exchange) {
+        String identity = identity(exchange);
+        return Mono.fromCallable(() -> {
+            Map<String, Object> result = new java.util.LinkedHashMap<>();
+            result.put("run_id", runId);
+            result.put("status", runService.cancel(runId, identity));
+            return result;
+        });
+    }
+
+    private int parseAfterSeq(String lastEventId) {
+        if (lastEventId == null || lastEventId.isBlank()) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(lastEventId.trim());
+        } catch (NumberFormatException error) {
+            throw new GatewayException("invalid Last-Event-ID",
+                    HttpStatus.BAD_REQUEST, "invalid_request", GatewayErrorCode.INVALID_REQUEST, "last_event_id");
+        }
     }
 
     @GetMapping("/v1/models")

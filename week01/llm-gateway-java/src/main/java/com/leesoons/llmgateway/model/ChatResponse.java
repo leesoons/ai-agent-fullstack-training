@@ -19,6 +19,7 @@ public class ChatResponse {
     private int fallbacks;
     private String provider;
     private String upstreamModel;
+    private String source;
 
     public String getRequestId() {
         return requestId;
@@ -114,5 +115,13 @@ public class ChatResponse {
 
     public void setUpstreamModel(String upstreamModel) {
         this.upstreamModel = upstreamModel;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
     }
 }
