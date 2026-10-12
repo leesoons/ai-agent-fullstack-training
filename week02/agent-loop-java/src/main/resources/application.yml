@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: agent-loop-java
+  main:
+    banner-mode: off
+
+server:
+  port: 8001
+
+agent:
+  model: deepseek-v4-pro
+  identity: demo
+  max-rounds: 4
+
+llm:
+  data-dir: ${LLM_GATEWAY_DATA_DIR:./data}
+  api-keys:
+    - ${GATEWAY_API_KEY:}
+  structured-output-retries: 1
+
+  retry:
+    max-retries: 3
+    base-delay-millis: 250
+    max-delay-millis: 4000
+    jitter: 0.2
+    retry-statuses: [408, 409, 429, 500, 502, 503, 504]
+
+  rate-limit:
+    enabled: false
+    requests-per-minute: 60
+    burst: 10
+
+  providers:
+    deepseek-openai:
+      base-url: ${DEEPSEEK_OPENAI_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_V4_PRO_API_KEY:}
+      timeout-seconds: 120
+    deepseek-anthropic:
+      base-url: ${DEEPSEEK_ANTHROPIC_BASE_URL:https://api.deepseek.com/anthropic}
+      api-key: ${DEEPSEEK_V4_FLASH_API_KEY:}
+      timeout-seconds: 120
+
+  models:
+    deepseek-v4-pro:
+      strategy: priority
+      routes:
+        - provider: deepseek-openai
+          model: deepseek-v4-pro
+          protocol: openai_responses
+    deepseek-v4-flash:
+      strategy: priority
+      routes:
+        - provider: deepseek-anthropic
+          model: deepseek-v4-flash
+          protocol: anthropic_messages

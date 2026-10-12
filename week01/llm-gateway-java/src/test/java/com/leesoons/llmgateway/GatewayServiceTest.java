@@ -17,6 +17,7 @@ import com.leesoons.llmgateway.model.PromptReference;
 import com.leesoons.llmgateway.model.ResponseFormat;
 import com.leesoons.llmgateway.model.StreamEvent;
 import com.leesoons.llmgateway.model.TokenUsage;
+import com.leesoons.llmgateway.model.ToolCallMessage;
 import com.leesoons.llmgateway.service.GatewayService;
 import com.leesoons.llmgateway.service.InMemoryPromptStore;
 import com.leesoons.llmgateway.service.ModelRouter;
@@ -395,6 +396,121 @@ class GatewayServiceTest {
         ChatRequest request = new ChatRequest();
         request.setModel(model);
         request.setMessages(List.of(new ChatMessage("user", content)));
+        return request;
+    }
+
+    @Test
+    void openaiResponsesAdapterParsesToolCallsAndForwardsTools() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start();
+            server.enqueue(jsonResponse("""
+                    {"id":"resp_1",
+                     "output":[{"type":"function_call","id":"fc_1","call_id":"call_1",
+                                "name":"query_weather","arguments":"{}"}],
+                     "usage":{"input_tokens":10,"output_tokens":5}}"""));
+
+            GatewayProperties cfg = openAiConfig(server);
+            Harness h = harness(cfg);
+
+            ChatRequest request = req("deepseek-v4-pro", "查北京天气");
+            request.setTools(List.of(mapper.readTree("""
+                    {"type":"function","function":{"name":"query_weather",
+                     "description":"查询天气","parameters":{"type":"object"}}}""")));
+
+            ChatResponse resp = h.gateway().chat(request, "test").block();
+
+            assertThat(resp.getToolCalls()).hasSize(1);
+            assertThat(resp.getToolCalls().get(0).getId()).isEqualTo("call_1");
+            assertThat(resp.getToolCalls().get(0).getName()).isEqualTo("query_weather");
+
+            RecordedRequest recorded = server.takeRequest();
+            assertThat(recorded.getBody().readUtf8()).contains("\"tools\"");
+        }
+    }
+
+    @Test
+    void anthropicMessagesAdapterParsesToolUse() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start();
+            server.enqueue(jsonResponse("""
+                    {"id":"msg_1","type":"message","role":"assistant",
+                     "content":[{"type":"tool_use","id":"toolu_1","name":"query_weather","input":{"city":"beijing"}}],
+                     "usage":{}}"""));
+
+            GatewayProperties cfg = baseConfig();
+            addProvider(cfg, "p", server.url("/").toString(), "sk-anthropic");
+            addModel(cfg, "deepseek-v4-flash", "p", "deepseek-v4-flash", "anthropic_messages");
+            Harness h = harness(cfg);
+
+            ChatRequest request = req("deepseek-v4-flash", "查北京天气");
+            request.setTools(List.of(mapper.readTree("""
+                    {"type":"function","function":{"name":"query_weather",
+                     "description":"查询天气","parameters":{"type":"object"}}}""")));
+
+            ChatResponse resp = h.gateway().chat(request, "test").block();
+
+            assertThat(resp.getToolCalls()).hasSize(1);
+            assertThat(resp.getToolCalls().get(0).getId()).isEqualTo("toolu_1");
+            assertThat(resp.getToolCalls().get(0).getName()).isEqualTo("query_weather");
+            assertThat(resp.getToolCalls().get(0).getArguments()).contains("beijing");
+
+            RecordedRequest recorded = server.takeRequest();
+            assertThat(recorded.getBody().readUtf8()).contains("input_schema");
+        }
+    }
+
+    @Test
+    void openaiResponsesAdapterRoundTripsToolMessages() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start();
+            server.enqueue(jsonResponse("{\"id\":\"resp_1\",\"output_text\":\"done\",\"usage\":{}}"));
+
+            GatewayProperties cfg = openAiConfig(server);
+            Harness h = harness(cfg);
+
+            ChatRequest request = toolHistoryRequest("deepseek-v4-pro");
+            h.gateway().chat(request, "test").block();
+
+            RecordedRequest recorded = server.takeRequest();
+            String body = recorded.getBody().readUtf8();
+            assertThat(body).contains("function_call");
+            assertThat(body).contains("function_call_output");
+            assertThat(body).contains("call_1");
+        }
+    }
+
+    @Test
+    void anthropicMessagesAdapterRoundTripsToolMessages() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start();
+            server.enqueue(jsonResponse("{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"usage\":{}}"));
+
+            GatewayProperties cfg = baseConfig();
+            addProvider(cfg, "p", server.url("/").toString(), "sk-anthropic");
+            addModel(cfg, "deepseek-v4-flash", "p", "deepseek-v4-flash", "anthropic_messages");
+            Harness h = harness(cfg);
+
+            ChatRequest request = toolHistoryRequest("deepseek-v4-flash");
+            h.gateway().chat(request, "test").block();
+
+            RecordedRequest recorded = server.takeRequest();
+            String body = recorded.getBody().readUtf8();
+            assertThat(body).contains("tool_use");
+            assertThat(body).contains("tool_result");
+            assertThat(body).contains("call_1");
+        }
+    }
+
+    private ChatRequest toolHistoryRequest(String model) {
+        ChatMessage user = new ChatMessage("user", "查北京天气");
+        ChatMessage assistant = new ChatMessage("assistant", null);
+        assistant.setToolCalls(List.of(new ToolCallMessage("call_1", "query_weather", "{\"city\":\"北京\"}")));
+        ChatMessage tool = new ChatMessage("tool", "{\"city\":\"北京\",\"temperature\":26}");
+        tool.setToolCallId("call_1");
+
+        ChatRequest request = new ChatRequest();
+        request.setModel(model);
+        request.setMessages(List.of(user, assistant, tool));
         return request;
     }
 

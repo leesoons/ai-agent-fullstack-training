@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.leesoons</groupId>
+    <artifactId>ai-agent-fullstack-training-homework</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>ai-agent-fullstack-training-homework</name>
+    <description>AI 全栈训练营作业：统一聚合工程（LLM Gateway + Tool Runtime，后续接入 Agent Loop）</description>
+
+    <!-- 仅做聚合，不要求子模块继承本 POM；各子模块继续使用 spring-boot-starter-parent -->
+    <modules>
+        <module>week01/llm-gateway-java</module>
+        <module>week02/tool-runtime-java</module>
+        <module>week02/agent-loop-java</module>
+    </modules>
+</project>

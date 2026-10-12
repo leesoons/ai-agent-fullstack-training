@@ -8,12 +8,15 @@ import com.leesoons.llmgateway.config.GatewayProperties;
 import com.leesoons.llmgateway.model.ChatMessage;
 import com.leesoons.llmgateway.model.ChatRequest;
 import com.leesoons.llmgateway.model.TokenUsage;
+import com.leesoons.llmgateway.model.ToolCallMessage;
 import com.leesoons.llmgateway.service.UpstreamClient;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -82,6 +85,34 @@ public class AnthropicMessagesAdapter implements LlmAdapter {
                     system.append("\n\n");
                 }
                 system.append(content);
+            } else if ("tool".equals(role)) {
+                // 工具结果 -> role=user 的 tool_result 块
+                ObjectNode item = objectMapper.createObjectNode();
+                item.put("role", "user");
+                ArrayNode blocks = objectMapper.createArrayNode();
+                ObjectNode result = objectMapper.createObjectNode();
+                result.put("type", "tool_result");
+                result.put("tool_use_id", message.getToolCallId() == null ? "" : message.getToolCallId());
+                result.put("content", content);
+                blocks.add(result);
+                item.set("content", blocks);
+                messages.add(item);
+            } else if (message.getToolCalls() != null && !message.getToolCalls().isEmpty()) {
+                // assistant 工具提议 -> tool_use 块
+                ObjectNode item = objectMapper.createObjectNode();
+                item.put("role", "assistant");
+                ArrayNode blocks = objectMapper.createArrayNode();
+                for (ToolCallMessage call : message.getToolCalls()) {
+                    ObjectNode block = objectMapper.createObjectNode();
+                    block.put("type", "tool_use");
+                    block.put("id", call.getId());
+                    block.put("name", call.getName());
+                    JsonNode input = parseJson(call.getArguments());
+                    block.set("input", input == null ? objectMapper.createObjectNode() : input);
+                    blocks.add(block);
+                }
+                item.set("content", blocks);
+                messages.add(item);
             } else {
                 ObjectNode item = objectMapper.createObjectNode();
                 item.put("role", role);
@@ -99,11 +130,44 @@ public class AnthropicMessagesAdapter implements LlmAdapter {
             body.put("system", system.toString());
         }
         body.set("messages", messages);
+
+        if (request.getTools() != null && !request.getTools().isEmpty()) {
+            ArrayNode tools = objectMapper.createArrayNode();
+            for (JsonNode tool : request.getTools()) {
+                JsonNode fn = tool.path("function");
+                ObjectNode item = objectMapper.createObjectNode();
+                item.put("name", fn.path("name").asText());
+                item.put("description", fn.path("description").asText(""));
+                if (fn.hasNonNull("parameters")) {
+                    item.set("input_schema", fn.get("parameters"));
+                }
+                tools.add(item);
+            }
+            body.set("tools", tools);
+        }
         return body;
     }
 
     private AdapterResponse toAdapterResponse(JsonNode json) {
-        return new AdapterResponse(extractContent(json), null, extractUsage(json));
+        return new AdapterResponse(extractContent(json), null, extractUsage(json), extractToolCalls(json));
+    }
+
+    private List<ToolCallMessage> extractToolCalls(JsonNode json) {
+        JsonNode content = json.get("content");
+        if (content == null || !content.isArray()) {
+            return List.of();
+        }
+        List<ToolCallMessage> calls = new ArrayList<>();
+        for (JsonNode part : content) {
+            if ("tool_use".equals(part.path("type").asText(""))) {
+                String arguments = part.hasNonNull("input") ? part.get("input").toString() : "{}";
+                calls.add(new ToolCallMessage(
+                        part.path("id").asText(""),
+                        part.path("name").asText(""),
+                        arguments));
+            }
+        }
+        return calls;
     }
 
     private String extractContent(JsonNode json) {
@@ -123,6 +187,17 @@ public class AnthropicMessagesAdapter implements LlmAdapter {
             }
         }
         return null;
+    }
+
+    private JsonNode parseJson(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(text);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private TokenUsage extractUsage(JsonNode json) {

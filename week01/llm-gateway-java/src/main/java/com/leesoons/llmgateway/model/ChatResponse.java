@@ -2,6 +2,8 @@ package com.leesoons.llmgateway.model;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import java.util.List;
+
 /**
  * 网关统一非流式响应。
  */
@@ -20,6 +22,11 @@ public class ChatResponse {
     private String provider;
     private String upstreamModel;
     private String source;
+
+    /**
+     * 模型返回的工具调用提议；Agent Loop 据此交给 Tool Runtime 执行。
+     */
+    private List<ToolCallMessage> toolCalls;
 
     public String getRequestId() {
         return requestId;
@@ -123,5 +130,13 @@ public class ChatResponse {
 
     public void setSource(String source) {
         this.source = source;
+    }
+
+    public List<ToolCallMessage> getToolCalls() {
+        return toolCalls;
+    }
+
+    public void setToolCalls(List<ToolCallMessage> toolCalls) {
+        this.toolCalls = toolCalls;
     }
 }

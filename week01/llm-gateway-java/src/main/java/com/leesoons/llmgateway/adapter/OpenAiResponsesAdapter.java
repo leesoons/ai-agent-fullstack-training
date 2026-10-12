@@ -8,12 +8,15 @@ import com.leesoons.llmgateway.config.GatewayProperties;
 import com.leesoons.llmgateway.model.ChatMessage;
 import com.leesoons.llmgateway.model.ChatRequest;
 import com.leesoons.llmgateway.model.TokenUsage;
+import com.leesoons.llmgateway.model.ToolCallMessage;
 import com.leesoons.llmgateway.service.UpstreamClient;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -80,6 +83,24 @@ public class OpenAiResponsesAdapter implements LlmAdapter {
                     instructions.append("\n\n");
                 }
                 instructions.append(content);
+            } else if ("tool".equals(role)) {
+                // 工具结果 -> function_call_output
+                ObjectNode item = objectMapper.createObjectNode();
+                item.put("type", "function_call_output");
+                item.put("call_id", message.getToolCallId() == null ? "" : message.getToolCallId());
+                item.put("output", content);
+                input.add(item);
+            } else if (message.getToolCalls() != null && !message.getToolCalls().isEmpty()) {
+                // assistant 工具提议 -> function_call
+                for (ToolCallMessage call : message.getToolCalls()) {
+                    ObjectNode item = objectMapper.createObjectNode();
+                    item.put("type", "function_call");
+                    item.put("id", call.getId());
+                    item.put("call_id", call.getId());
+                    item.put("name", call.getName());
+                    item.put("arguments", call.getArguments() == null ? "{}" : call.getArguments());
+                    input.add(item);
+                }
             } else {
                 ObjectNode item = objectMapper.createObjectNode();
                 item.put("role", role);
@@ -91,6 +112,22 @@ public class OpenAiResponsesAdapter implements LlmAdapter {
             body.put("instructions", instructions.toString());
         }
         body.set("input", input);
+
+        if (request.getTools() != null && !request.getTools().isEmpty()) {
+            ArrayNode tools = objectMapper.createArrayNode();
+            for (JsonNode tool : request.getTools()) {
+                JsonNode fn = tool.path("function");
+                ObjectNode item = objectMapper.createObjectNode();
+                item.put("type", "function");
+                item.put("name", fn.path("name").asText());
+                item.put("description", fn.path("description").asText(""));
+                if (fn.hasNonNull("parameters")) {
+                    item.set("parameters", fn.get("parameters"));
+                }
+                tools.add(item);
+            }
+            body.set("tools", tools);
+        }
 
         if (request.getResponseFormat() != null && request.getResponseFormat().isJsonSchema()) {
             ObjectNode format = objectMapper.createObjectNode();
@@ -107,7 +144,24 @@ public class OpenAiResponsesAdapter implements LlmAdapter {
     }
 
     private AdapterResponse toAdapterResponse(JsonNode json) {
-        return new AdapterResponse(extractContent(json), null, extractUsage(json));
+        return new AdapterResponse(extractContent(json), null, extractUsage(json), extractToolCalls(json));
+    }
+
+    private List<ToolCallMessage> extractToolCalls(JsonNode json) {
+        JsonNode output = json.get("output");
+        if (output == null || !output.isArray()) {
+            return List.of();
+        }
+        List<ToolCallMessage> calls = new ArrayList<>();
+        for (JsonNode item : output) {
+            if ("function_call".equals(item.path("type").asText(""))) {
+                String id = item.path("call_id").asText(item.path("id").asText(""));
+                calls.add(new ToolCallMessage(id,
+                        item.path("name").asText(""),
+                        item.path("arguments").asText("")));
+            }
+        }
+        return calls;
     }
 
     private String extractContent(JsonNode json) {

@@ -38,6 +38,11 @@ public class ChatRequest {
     @JsonProperty("timeout_seconds")
     private Integer timeoutSeconds;
 
+    /**
+     * 下发给模型的可调用工具列表（OpenAI Function Calling 风格）。
+     */
+    private List<JsonNode> tools;
+
     public String getModel() {
         return model;
     }
@@ -108,5 +113,13 @@ public class ChatRequest {
 
     public void setTimeoutSeconds(Integer timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
+    }
+
+    public List<JsonNode> getTools() {
+        return tools;
+    }
+
+    public void setTools(List<JsonNode> tools) {
+        this.tools = tools;
     }
 }

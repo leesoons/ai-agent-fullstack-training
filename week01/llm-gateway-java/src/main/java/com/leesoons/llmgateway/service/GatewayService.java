@@ -144,7 +144,7 @@ public class GatewayService {
             }
             try {
                 JsonNode parsed = structured.validate(result.response.getContent(), schema);
-                result.response = new AdapterResponse(result.response.getContent(), parsed, result.response.getUsage());
+                result.response = new AdapterResponse(result.response.getContent(), parsed, result.response.getUsage(), result.response.getToolCalls());
                 return Mono.just(result);
             } catch (StructuredOutputException error) {
                 if (structuredAttempt.get() >= config.getStructuredOutputRetries()) {
@@ -225,6 +225,7 @@ public class GatewayService {
         response.setRequestId(event.getRequestId());
         response.setModel(event.getRequestedModel());
         response.setContent(result.response.getContent());
+        response.setToolCalls(result.response.getToolCalls());
         response.setParsed(result.response.getParsed());
         response.setUsage(new TokenUsage(event.getInputTokens(), event.getOutputTokens(), event.getCachedTokens()));
         response.setLatencyMs((long) event.getLatencyMs());
@@ -414,6 +415,7 @@ public class GatewayService {
         copy.setMaxTokens(source.getMaxTokens());
         copy.setResponseFormat(source.getResponseFormat());
         copy.setTimeoutSeconds(source.getTimeoutSeconds());
+        copy.setTools(source.getTools());
         return copy;
     }
 
