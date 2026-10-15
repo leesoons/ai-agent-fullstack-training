@@ -1,7 +1,7 @@
 package com.leesoons.agentloop;
 
-import com.leesoons.toolruntime.AgentLoop;
-import com.leesoons.toolruntime.ModelClient;
+import com.leesoons.agentcore.AgentLoop;
+import com.leesoons.agentcore.ModelClient;
 import com.leesoons.toolruntime.SampleTools;
 import com.leesoons.toolruntime.ToolCall;
 import com.leesoons.toolruntime.ToolRuntime;

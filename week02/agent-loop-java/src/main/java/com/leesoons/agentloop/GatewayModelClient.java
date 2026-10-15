@@ -7,8 +7,8 @@ import com.leesoons.llmgateway.model.ChatRequest;
 import com.leesoons.llmgateway.model.ChatResponse;
 import com.leesoons.llmgateway.model.ToolCallMessage;
 import com.leesoons.llmgateway.service.GatewayService;
-import com.leesoons.toolruntime.LoopMessage;
-import com.leesoons.toolruntime.ModelClient;
+import com.leesoons.agentcore.LoopMessage;
+import com.leesoons.agentcore.ModelClient;
 import com.leesoons.toolruntime.ToolCall;
 
 import java.util.ArrayList;

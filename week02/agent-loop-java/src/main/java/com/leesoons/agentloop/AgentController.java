@@ -1,9 +1,9 @@
 package com.leesoons.agentloop;
 
-import com.leesoons.toolruntime.AgentLoop;
+import com.leesoons.agentcore.AgentLoop;
+import com.leesoons.agentcore.LoopMessage;
+import com.leesoons.agentcore.ModelClient;
 import com.leesoons.toolruntime.ExecutionContext;
-import com.leesoons.toolruntime.LoopMessage;
-import com.leesoons.toolruntime.ModelClient;
 import com.leesoons.toolruntime.ToolSnapshot;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;

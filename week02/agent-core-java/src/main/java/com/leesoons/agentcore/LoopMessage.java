@@ -1,4 +1,6 @@
-package com.leesoons.toolruntime;
+package com.leesoons.agentcore;
+
+import com.leesoons.toolruntime.ToolCall;
 
 import java.util.List;
 

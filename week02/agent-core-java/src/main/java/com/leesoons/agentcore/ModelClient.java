@@ -1,12 +1,12 @@
-package com.leesoons.toolruntime;
+package com.leesoons.agentcore;
+
+import com.leesoons.toolruntime.ToolCall;
 
 import java.util.List;
 import java.util.Map;
 
 /**
  * 模型调用抽象。Agent Loop 只依赖这个接口，不直接耦合 Gateway 或具体供应商。
- *
- * <p>3.4 会提供 {@code GatewayModelClient} 实现，把 Gateway 包进来。</p>
  */
 public interface ModelClient {
 

@@ -2,8 +2,8 @@ package com.leesoons.agentloop;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.leesoons.llmgateway.service.GatewayService;
-import com.leesoons.toolruntime.AgentLoop;
-import com.leesoons.toolruntime.ModelClient;
+import com.leesoons.agentcore.AgentLoop;
+import com.leesoons.agentcore.ModelClient;
 import com.leesoons.toolruntime.SampleTools;
 import com.leesoons.toolruntime.ToolRegistry;
 import com.leesoons.toolruntime.ToolRuntime;

@@ -1,5 +1,11 @@
-package com.leesoons.toolruntime;
+package com.leesoons.agentcore;
 
+import com.leesoons.toolruntime.ExecutionContext;
+import com.leesoons.toolruntime.SampleTools;
+import com.leesoons.toolruntime.ToolCall;
+import com.leesoons.toolruntime.ToolRegistry;
+import com.leesoons.toolruntime.ToolRuntime;
+import com.leesoons.toolruntime.ToolSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -45,7 +51,6 @@ class AgentLoopTest {
         ExecutionContext context = new ExecutionContext("t", "u", "tenant", Set.of("weather:read"));
         AgentLoop loop = new AgentLoop(runtime, 2);
 
-        // 模型永远只提议工具，不返回文本
         ModelClient client = (messages, tools) -> new ModelClient.AssistantTurn(null,
                 List.of(new ToolCall("c1", "query_weather", "{\"city\":\"北京\"}")));
 

@@ -1,12 +1,18 @@
-package com.leesoons.toolruntime;
+package com.leesoons.agentcore;
+
+import com.leesoons.toolruntime.ExecutionContext;
+import com.leesoons.toolruntime.ToolCall;
+import com.leesoons.toolruntime.ToolResult;
+import com.leesoons.toolruntime.ToolRuntime;
+import com.leesoons.toolruntime.ToolSnapshot;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 最小 Agent Loop：模型提议 -> Runtime 执行 -> 结果回填 -> 再请求模型，直到得到最终文本。
+ * Agent 编排核心：模型提议 -> Runtime 执行 -> 结果回填 -> 再请求模型，直到得到最终文本。
  *
- * <p>工具定义与 Loop 分离，新增工具不需要改动本类。</p>
+ * <p>它只依赖「工具快照 + 执行器 + 模型抽象」，不关心工具来自本地还是 MCP。</p>
  */
 public final class AgentLoop {
 

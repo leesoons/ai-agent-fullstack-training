@@ -22,6 +22,7 @@ public record ExecutionContext(
     }
 
     public boolean hasPermission(String permission) {
-        return permissions.contains(permission);
+        // 无权限要求的工具（permission == null）对任何调用方开放。
+        return permission == null || permissions.contains(permission);
     }
 }
