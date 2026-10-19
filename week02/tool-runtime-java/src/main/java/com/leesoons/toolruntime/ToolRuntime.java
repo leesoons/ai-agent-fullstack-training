@@ -89,48 +89,74 @@ public final class ToolRuntime implements AutoCloseable {
 
     /**
      * 执行一次工具调用，返回统一产物 {@link ToolResult}。
+     *
+     * <p>三段式：{@link #prepare} 门禁 → {@link #execute} 受控执行 → {@link #finalizeSuccess}。
+     * 门禁拒绝通过 {@link PolicyDenied} 抛出，统一在 {@link #finalizeDenied} 审计并返回。</p>
      */
     public ToolResult invoke(ToolSnapshot snapshot, ToolCall call, ExecutionContext context) {
         long startedAt = System.nanoTime();
+        PreparedCall prepared;
+        try {
+            prepared = prepare(snapshot, call, context);
+        } catch (PolicyDenied e) {
+            return finalizeDenied(call, context, e.code(), e.getMessage(), startedAt);
+        }
+
+        ExecutionOutcome outcome = execute(prepared, context);
+        if (outcome.output() == null) {
+            return finalizeDenied(call, context, outcome.errorCode(), outcome.errorMessage(), startedAt);
+        }
+        if (!validate(prepared.tool().outputSchema(), outcome.output()).isEmpty()) {
+            return finalizeDenied(call, context, "INVALID_OUTPUT", "工具返回结果不符合 Schema", startedAt);
+        }
+        return finalizeSuccess(prepared, context, outcome.output(), startedAt);
+    }
+
+    /**
+     * 调用前门禁：Schema / deny / plan / 白名单 / RBAC / 预检 / 审批 / 确认 / 依赖。
+     */
+    private PreparedCall prepare(ToolSnapshot snapshot, ToolCall call, ExecutionContext context) {
         ToolDefinition tool = snapshot.get(call.name());
         if (tool == null) {
-            return deny(call, context, "TOOL_NOT_FOUND", "工具不在当前快照中", startedAt);
+            throw new PolicyDenied("TOOL_NOT_FOUND", "工具不在当前快照中");
         }
         ToolPolicy policy = tool.policy();
 
         if (enabled != null && Boolean.FALSE.equals(enabled.get(tool.name()))) {
-            return deny(call, context, "TOOL_DISABLED", "工具当前已停用", startedAt);
+            throw new PolicyDenied("TOOL_DISABLED", "工具当前已停用");
         }
 
         JsonNode params = parseArguments(call.argumentsJson());
         if (params == null) {
-            return deny(call, context, "INVALID_ARGUMENT", "工具参数不是合法 JSON", startedAt);
+            throw new PolicyDenied("INVALID_ARGUMENT", "工具参数不是合法 JSON");
         }
         if (!validate(tool.inputSchema(), params).isEmpty()) {
-            return deny(call, context, "INVALID_ARGUMENT", "工具参数不符合 Schema", startedAt);
+            throw new PolicyDenied("INVALID_ARGUMENT", "工具参数不符合 Schema");
         }
 
         if (policy.denied() || !policy.enabled()) {
-            return deny(call, context, "DENY_RULE", "命中 deny 规则", startedAt);
+            throw new PolicyDenied("DENY_RULE", "命中 deny 规则");
         }
         if (context.mode() == PermissionMode.PLAN
                 && (policy.effect() == Effect.WRITE || policy.effect() == Effect.SHELL)) {
-            return deny(call, context, "PLAN_MODE_DENIED", "plan 模式禁止写操作和 Shell", startedAt);
+            throw new PolicyDenied("PLAN_MODE_DENIED", "plan 模式禁止写操作和 Shell");
         }
         if (!context.allowedTools().isEmpty() && !context.allowedTools().contains(tool.name())) {
-            return deny(call, context, "TOOL_NOT_ALLOWED", "工具不在本轮白名单", startedAt);
+            throw new PolicyDenied("TOOL_NOT_ALLOWED", "工具不在本轮白名单");
         }
-        if (permissionEngine.decide(tool, context) == PermissionDecision.DENY) {
-            return deny(call, context, "PERMISSION_DENIED", "调用方没有所需权限", startedAt);
+
+        PermissionDecision decision = permissionEngine.decide(tool, context);
+        if (decision == PermissionDecision.DENY) {
+            throw new PolicyDenied("PERMISSION_DENIED", "调用方没有所需权限");
         }
 
         if (tool.precheck() != null) {
             try {
                 tool.precheck().precheck(params, context);
             } catch (PolicyDenied e) {
-                return deny(call, context, e.code(), e.getMessage(), startedAt);
+                throw e;
             } catch (Exception e) {
-                return deny(call, context, "BUSINESS_RULE_DENIED", "业务预检查失败", startedAt);
+                throw new PolicyDenied("BUSINESS_RULE_DENIED", "业务预检查失败");
             }
         }
 
@@ -138,29 +164,35 @@ public final class ToolRuntime implements AutoCloseable {
             try {
                 approvals.consume(context.approvalId(), tool, params, context);
             } catch (PolicyDenied e) {
-                return deny(call, context, e.code(), e.getMessage(), startedAt);
+                throw e;
             }
         }
         if (policy.requiresConfirmation() && context.mode() != PermissionMode.BYPASS_PERMISSIONS) {
-            return deny(call, context, "CONFIRMATION_REQUIRED", "该操作需要用户确认", startedAt);
+            throw new PolicyDenied("CONFIRMATION_REQUIRED", "该操作需要用户确认");
         }
         for (String dependency : tool.dependencies()) {
             if (!healthyDependencies.contains(dependency)) {
-                return deny(call, context, "DEPENDENCY_UNAVAILABLE", "工具依赖当前不可用", startedAt);
+                throw new PolicyDenied("DEPENDENCY_UNAVAILABLE", "工具依赖当前不可用");
             }
         }
+        return new PreparedCall(call, tool, params, decision);
+    }
 
-        ExecutionOutcome outcome = executeWithLock(tool, params, context);
-        if (outcome.output() == null) {
-            return deny(call, context, outcome.errorCode(), outcome.errorMessage(), startedAt);
-        }
+    /**
+     * 调用中受控执行：读写分治、写锁、超时与有限重试。
+     */
+    private ExecutionOutcome execute(PreparedCall prepared, ExecutionContext context) {
+        return executeWithLock(prepared.tool(), prepared.arguments(), context);
+    }
 
-        if (!validate(tool.outputSchema(), outcome.output()).isEmpty()) {
-            return deny(call, context, "INVALID_OUTPUT", "工具返回结果不符合 Schema", startedAt);
-        }
-
-        ToolResult result = new ToolResult(call.id(), tool.name(), outcome.output().toString(), false, null);
-        audit.write(auditRecord(call, context, tool.name(), true, null, startedAt));
+    /**
+     * 调用后成功保护：输出校验通过后构造 ToolResult 并写入审计。
+     */
+    private ToolResult finalizeSuccess(PreparedCall prepared, ExecutionContext context,
+                                       JsonNode output, long startedAt) {
+        ToolResult result = new ToolResult(
+                prepared.call().id(), prepared.tool().name(), output.toString(), false, null);
+        audit.write(auditRecord(prepared.call(), context, prepared.tool().name(), true, null, startedAt));
         return result;
     }
 
@@ -261,8 +293,8 @@ public final class ToolRuntime implements AutoCloseable {
         return new ExecutionOutcome(null, "EXECUTION_FAILED", "工具执行失败");
     }
 
-    private ToolResult deny(ToolCall call, ExecutionContext context,
-                            String code, String message, long startedAt) {
+    private ToolResult finalizeDenied(ToolCall call, ExecutionContext context,
+                                      String code, String message, long startedAt) {
         ObjectNode node = objectMapper.createObjectNode();
         node.put("code", code);
         node.put("message", message);
