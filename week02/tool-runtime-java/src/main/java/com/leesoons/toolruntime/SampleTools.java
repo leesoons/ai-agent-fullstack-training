@@ -51,12 +51,9 @@ public final class SampleTools {
                          "additionalProperties":false}
                         """),
                 SampleTools::queryWeather,
-                "weather:read",
-                RiskLevel.LOW,
-                3.0,
-                2,
-                true,
-                Set.of("weather-service"));
+                new ToolPolicy(Effect.READ, RiskLevel.LOW, "weather:read",
+                        false, false, false, 3.0, 2, true, true),
+                Set.of("weather-service"), null, null);
     }
 
     public static ToolDefinition customerDatabaseTool() {
@@ -82,12 +79,9 @@ public final class SampleTools {
                          "additionalProperties":false}
                         """),
                 SampleTools::queryCustomerDatabase,
-                "database:read",
-                RiskLevel.MEDIUM,
-                3.0,
-                1,
-                true,
-                Set.of("customer-database"));
+                new ToolPolicy(Effect.READ, RiskLevel.MEDIUM, "database:read",
+                        false, false, false, 3.0, 1, true, true),
+                Set.of("customer-database"), null, null);
     }
 
     private static JsonNode queryWeather(JsonNode params, ExecutionContext context) {

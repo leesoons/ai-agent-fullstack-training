@@ -122,7 +122,9 @@ class ToolRuntimeTest {
         ToolDefinition tool = new ToolDefinition(
                 "flaky", "1.0.0", "desc",
                 objectSchema(), objectSchema(), handler,
-                "flaky:read", RiskLevel.LOW, 1.0, 1, true, Set.of());
+                new ToolPolicy(Effect.READ, RiskLevel.LOW, "flaky:read",
+                        false, false, false, 1.0, 1, true, true),
+                Set.of(), null, null);
 
         ToolRegistry registry = new ToolRegistry();
         registry.register(tool);
@@ -140,7 +142,9 @@ class ToolRuntimeTest {
         return new ToolDefinition(name, "1.0.0", "desc",
                 objectSchema(), objectSchema(),
                 (params, ctx) -> MAPPER.createObjectNode().put("ok", true),
-                permission, risk, 1.0, 0, true, Set.of());
+                new ToolPolicy(Effect.READ, risk, permission,
+                        false, false, risk == RiskLevel.HIGH, 1.0, 0, true, true),
+                Set.of(), null, null);
     }
 
     private JsonNode objectSchema() {

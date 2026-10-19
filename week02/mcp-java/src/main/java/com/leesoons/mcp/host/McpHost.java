@@ -4,9 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.leesoons.mcp.client.McpClient;
+import com.leesoons.toolruntime.Effect;
 import com.leesoons.toolruntime.RiskLevel;
 import com.leesoons.toolruntime.ToolDefinition;
 import com.leesoons.toolruntime.ToolHandler;
+import com.leesoons.toolruntime.ToolPolicy;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -44,12 +46,9 @@ public final class McpHost {
                     remote.path("inputSchema"),
                     null,
                     handler,
-                    null,
-                    RiskLevel.LOW,
-                    5.0,
-                    0,
-                    false,
-                    Set.of()));
+                    new ToolPolicy(Effect.READ, RiskLevel.LOW, null,
+                            false, false, false, 5.0, 0, false, true),
+                    Set.of(), null, null));
         }
         return definitions;
     }

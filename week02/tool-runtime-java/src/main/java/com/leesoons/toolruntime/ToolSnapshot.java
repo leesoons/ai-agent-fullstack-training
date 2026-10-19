@@ -33,8 +33,8 @@ public final class ToolSnapshot {
      */
     public List<Map<String, Object>> providerToolsFor(Set<String> permissions) {
         return tools.values().stream()
-                .filter(tool -> tool.permission() == null
-                        || (permissions != null && permissions.contains(tool.permission())))
+                .filter(tool -> tool.policy().permission() == null
+                        || (permissions != null && permissions.contains(tool.policy().permission())))
                 .map(tool -> tool.schema().toProviderTool())
                 .toList();
     }

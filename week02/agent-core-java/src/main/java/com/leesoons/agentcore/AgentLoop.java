@@ -45,7 +45,7 @@ public final class AgentLoop {
             messages.add(LoopMessage.assistant(turn.toolCalls()));
             for (ToolCall call : turn.toolCalls()) {
                 ToolResult result = runtime.invoke(snapshot, call, context);
-                messages.add(LoopMessage.tool(result.toolCallId(), result.content()));
+                messages.add(LoopMessage.tool(result.toolCallId(), result.toModelMessage()));
             }
         }
         return "工具调用轮数已达上限";

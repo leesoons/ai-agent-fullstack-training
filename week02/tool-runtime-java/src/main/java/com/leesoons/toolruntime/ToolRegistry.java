@@ -18,7 +18,7 @@ public final class ToolRegistry {
     public Dispose register(ToolDefinition tool) {
         if (tool.name() == null || tool.name().isBlank()
                 || tool.version() == null || tool.version().isBlank()
-                || tool.timeoutSeconds() <= 0) {
+                || tool.policy().timeoutSeconds() <= 0) {
             throw new IllegalArgumentException("tool name, version and positive timeout are required");
         }
         String key = key(tool.name(), tool.version());

@@ -10,11 +10,8 @@ import java.util.Set;
  * <p>模型侧：{@code name}、{@code description}、{@code inputSchema}，
  * 通过 {@link #schema()} 投影成对模型开放的 {@link ToolSchema}。</p>
  *
- * <p>Runtime 侧：{@code handler}、{@code outputSchema}、{@code permission}、
- * {@code risk}、{@code timeoutSeconds}、{@code maxRetries}、{@code idempotent}、
- * {@code dependencies}，这些治理与执行字段只由 Runtime 使用，绝不暴露给模型。</p>
- *
- * <p>对应 Python 2-2 的 {@code ToolDefinition}，并融合 2-1 的幂等与重试字段。</p>
+ * <p>Runtime 侧：{@code handler}、{@code outputSchema}、{@code policy}、
+ * {@code dependencies}、{@code precheck}、{@code canonicalTarget}，这些字段只由 Runtime 使用。</p>
  */
 public record ToolDefinition(
         String name,
@@ -23,14 +20,15 @@ public record ToolDefinition(
         JsonNode inputSchema,
         JsonNode outputSchema,
         ToolHandler handler,
-        String permission,
-        RiskLevel risk,
-        double timeoutSeconds,
-        int maxRetries,
-        boolean idempotent,
-        Set<String> dependencies) {
+        ToolPolicy policy,
+        Set<String> dependencies,
+        ToolPrecheck precheck,
+        CanonicalTarget canonicalTarget) {
 
     public ToolDefinition {
+        if (policy == null) {
+            throw new IllegalArgumentException("tool policy 不能为空");
+        }
         dependencies = (dependencies == null || dependencies.isEmpty())
                 ? Set.of()
                 : Set.copyOf(dependencies);
