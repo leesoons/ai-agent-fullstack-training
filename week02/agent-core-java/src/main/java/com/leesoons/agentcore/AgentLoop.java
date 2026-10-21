@@ -1,6 +1,10 @@
 package com.leesoons.agentcore;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.leesoons.toolruntime.ExecutionContext;
+import com.leesoons.toolruntime.LoopBudgetConfig;
+import com.leesoons.toolruntime.LoopGuard;
 import com.leesoons.toolruntime.ToolCall;
 import com.leesoons.toolruntime.ToolResult;
 import com.leesoons.toolruntime.ToolRuntime;
@@ -12,16 +16,26 @@ import java.util.List;
 /**
  * Agent 编排核心：模型提议 -> Runtime 执行 -> 结果回填 -> 再请求模型，直到得到最终文本。
  *
- * <p>它只依赖「工具快照 + 执行器 + 模型抽象」，不关心工具来自本地还是 MCP。</p>
+ * <p>它只依赖「工具快照 + 执行器 + 模型抽象」，不关心工具来自本地还是 MCP；
+ * 循环的继续/停止由 {@link LoopGuard} 统一裁决。</p>
  */
 public final class AgentLoop {
 
-    private final ToolRuntime runtime;
-    private final int maxRounds;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    private final ToolRuntime runtime;
+    private final LoopGuard guard;
+
+    /**
+     * 仅限制轮数的便捷构造：其余预算维度给足余量。
+     */
     public AgentLoop(ToolRuntime runtime, int maxRounds) {
+        this(runtime, new LoopGuard(LoopBudgetConfig.ofTurns(maxRounds)));
+    }
+
+    public AgentLoop(ToolRuntime runtime, LoopGuard guard) {
         this.runtime = runtime;
-        this.maxRounds = maxRounds;
+        this.guard = guard;
     }
 
     /**
@@ -37,17 +51,33 @@ public final class AgentLoop {
                       ExecutionContext context,
                       ModelClient client) {
         List<LoopMessage> messages = new ArrayList<>(initial);
-        for (int round = 0; round < maxRounds; round++) {
+        while (true) {
             ModelClient.AssistantTurn turn = client.call(messages, snapshot.providerToolsFor(context.permissions()));
             if (!turn.wantsTools()) {
                 return turn.content() == null ? "模型没有返回文本回复" : turn.content();
             }
             messages.add(LoopMessage.assistant(turn.toolCalls()));
             for (ToolCall call : turn.toolCalls()) {
+                LoopGuard.GuardDecision decision = guard.beforeToolCall(call.name(), call.argumentsJson());
+                if (!decision.allow()) {
+                    messages.add(LoopMessage.tool(call.id(), deniedResult(call, decision).toModelMessage()));
+                    continue;
+                }
                 ToolResult result = runtime.invoke(snapshot, call, context);
                 messages.add(LoopMessage.tool(result.toolCallId(), result.toModelMessage()));
             }
+            guard.observeTurn();
+            LoopGuard.StopDecision stop = guard.shouldStop();
+            if (stop.stop()) {
+                return "Agent 循环停止: " + stop.code() + " - " + stop.reason();
+            }
         }
-        return "工具调用轮数已达上限";
+    }
+
+    private ToolResult deniedResult(ToolCall call, LoopGuard.GuardDecision decision) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("code", decision.code());
+        node.put("message", decision.reason());
+        return new ToolResult(call.id(), call.name(), node.toString(), true, decision.code());
     }
 }

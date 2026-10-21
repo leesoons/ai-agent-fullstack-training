@@ -10,8 +10,9 @@ import java.util.Set;
  * <p>模型侧：{@code name}、{@code description}、{@code inputSchema}，
  * 通过 {@link #schema()} 投影成对模型开放的 {@link ToolSchema}。</p>
  *
- * <p>Runtime 侧：{@code handler}、{@code outputSchema}、{@code policy}、
- * {@code dependencies}、{@code precheck}、{@code canonicalTarget}，这些字段只由 Runtime 使用。</p>
+ * <p>Runtime 侧：{@code handler}、{@code fallbackHandler}、{@code outputSchema}、
+ * {@code policy}、{@code dependencies}、{@code precheck}、{@code canonicalTarget}，
+ * 这些字段只由 Runtime 使用。</p>
  */
 public record ToolDefinition(
         String name,
@@ -23,7 +24,23 @@ public record ToolDefinition(
         ToolPolicy policy,
         Set<String> dependencies,
         ToolPrecheck precheck,
-        CanonicalTarget canonicalTarget) {
+        CanonicalTarget canonicalTarget,
+        ToolHandler fallbackHandler) {
+
+    public ToolDefinition(
+            String name,
+            String version,
+            String description,
+            JsonNode inputSchema,
+            JsonNode outputSchema,
+            ToolHandler handler,
+            ToolPolicy policy,
+            Set<String> dependencies,
+            ToolPrecheck precheck,
+            CanonicalTarget canonicalTarget) {
+        this(name, version, description, inputSchema, outputSchema, handler, policy,
+                dependencies, precheck, canonicalTarget, null);
+    }
 
     public ToolDefinition {
         if (policy == null) {

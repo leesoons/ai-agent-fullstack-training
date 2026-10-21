@@ -104,12 +104,12 @@ public final class ToolRuntime implements AutoCloseable {
 
         ExecutionOutcome outcome = execute(prepared, context);
         if (outcome.output() == null) {
-            return finalizeDenied(call, context, outcome.errorCode(), outcome.errorMessage(), startedAt);
+            return finalizeDenied(call, context, outcome.code(), outcome.errorMessage(), startedAt);
         }
         if (!validate(prepared.tool().outputSchema(), outcome.output()).isEmpty()) {
             return finalizeDenied(call, context, "INVALID_OUTPUT", "工具返回结果不符合 Schema", startedAt);
         }
-        return finalizeSuccess(prepared, context, outcome.output(), startedAt);
+        return finalizeSuccess(prepared, context, outcome.output(), outcome.code(), startedAt);
     }
 
     /**
@@ -189,10 +189,10 @@ public final class ToolRuntime implements AutoCloseable {
      * 调用后成功保护：输出校验通过后构造 ToolResult 并写入审计。
      */
     private ToolResult finalizeSuccess(PreparedCall prepared, ExecutionContext context,
-                                       JsonNode output, long startedAt) {
+                                       JsonNode output, String code, long startedAt) {
         ToolResult result = new ToolResult(
                 prepared.call().id(), prepared.tool().name(), output.toString(), false, null);
-        audit.write(auditRecord(prepared.call(), context, prepared.tool().name(), true, null, startedAt));
+        audit.write(auditRecord(prepared.call(), context, prepared.tool().name(), true, code, startedAt));
         return result;
     }
 
@@ -233,7 +233,7 @@ public final class ToolRuntime implements AutoCloseable {
     /**
      * 执行结果：成功时 output 非空、错误码为空；失败时相反。
      */
-    private record ExecutionOutcome(JsonNode output, String errorCode, String errorMessage) {
+    private record ExecutionOutcome(JsonNode output, String code, String errorMessage) {
     }
 
     private ExecutionOutcome executeWithLock(ToolDefinition tool, JsonNode params, ExecutionContext context) {
@@ -253,44 +253,80 @@ public final class ToolRuntime implements AutoCloseable {
         ToolPolicy policy = tool.policy();
         long timeoutMillis = (long) (policy.timeoutSeconds() * 1000);
         int totalAttempts = policy.maxRetries() + 1;
+        String lastErrorCode = null;
+        String lastErrorMessage = null;
+        boolean lastRetryable = false;
+
         for (int attempt = 1; attempt <= totalAttempts; attempt++) {
-            boolean retryable = false;
-            String errorCode = null;
-            String errorMessage = null;
             Future<JsonNode> future = null;
             try {
                 future = executor.submit(() -> tool.handler().handle(params, context));
                 JsonNode output = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
-                return new ExecutionOutcome(output, null, null);
+                return new ExecutionOutcome(output, "OK", null);
             } catch (TimeoutException e) {
-                if (future != null) {
-                    future.cancel(true);
-                }
-                errorCode = "TIMEOUT";
-                errorMessage = "工具调用超时";
-                retryable = policy.idempotent();
+                cancel(future);
+                lastErrorCode = "TIMEOUT";
+                lastErrorMessage = "工具调用超时";
+                // 超时意味着结果不可知：只允许「只读」操作重试，写操作即使被误标为
+                // idempotent 也绝不重放，避免重复下单/扣款等幽灵副作用。
+                lastRetryable = policy.effect() == Effect.READ;
             } catch (ExecutionException e) {
                 Throwable cause = e.getCause();
                 if (cause instanceof TransientToolError) {
-                    errorCode = "UPSTREAM_ERROR";
-                    errorMessage = cause.getMessage() == null ? "上游服务暂时不可用" : cause.getMessage();
-                    retryable = policy.idempotent();
+                    lastErrorCode = "UPSTREAM_ERROR";
+                    lastErrorMessage = cause.getMessage() == null ? "上游服务暂时不可用" : cause.getMessage();
+                    lastRetryable = policy.idempotent();
                 } else {
-                    errorCode = "EXECUTION_FAILED";
-                    errorMessage = "工具执行失败";
+                    lastErrorCode = "EXECUTION_FAILED";
+                    lastErrorMessage = "工具执行失败";
+                    lastRetryable = false;
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                errorCode = "EXECUTION_FAILED";
-                errorMessage = "工具执行被中断";
+                lastErrorCode = "EXECUTION_FAILED";
+                lastErrorMessage = "工具执行被中断";
+                lastRetryable = false;
             }
 
-            if (!retryable || attempt == totalAttempts) {
-                return new ExecutionOutcome(null, errorCode, errorMessage);
+            if (!lastRetryable || attempt == totalAttempts) {
+                break;
             }
             sleepBackoff(attempt);
         }
-        return new ExecutionOutcome(null, "EXECUTION_FAILED", "工具执行失败");
+
+        if (tool.fallbackHandler() != null && lastRetryable) {
+            return executeFallback(tool, params, context, timeoutMillis);
+        }
+        return new ExecutionOutcome(null, lastErrorCode, lastErrorMessage);
+    }
+
+    /**
+     * 最后一道防线：主执行因可重试错误失败时降级执行，自身超时不再进入重试。
+     */
+    private ExecutionOutcome executeFallback(ToolDefinition tool, JsonNode params,
+                                             ExecutionContext context, long timeoutMillis) {
+        Future<JsonNode> future = null;
+        try {
+            future = executor.submit(() -> tool.fallbackHandler().handle(params, context));
+            JsonNode output = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            return new ExecutionOutcome(output, "FALLBACK_OK", null);
+        } catch (TimeoutException e) {
+            cancel(future);
+            return new ExecutionOutcome(null, "TIMEOUT", "降级处理超时");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            return new ExecutionOutcome(null, "FALLBACK_FAILED",
+                    cause.getMessage() == null ? "降级处理失败" : cause.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ExecutionOutcome(null, "FALLBACK_FAILED", "降级处理被中断");
+        }
+    }
+
+    private void cancel(Future<?> future) {
+        if (future != null) {
+            future.cancel(true);
+        }
     }
 
     private ToolResult finalizeDenied(ToolCall call, ExecutionContext context,
@@ -303,14 +339,15 @@ public final class ToolRuntime implements AutoCloseable {
     }
 
     private Map<String, Object> auditRecord(ToolCall call, ExecutionContext context,
-                                            String toolName, boolean ok, String errorCode, long startedAt) {
+                                            String toolName, boolean ok, String code, long startedAt) {
         double durationMs = (System.nanoTime() - startedAt) / 1_000_000.0;
         Map<String, Object> record = new LinkedHashMap<>();
         record.put("trace_id", context.traceId());
         record.put("tool_call_id", call.id());
         record.put("tool_name", toolName);
         record.put("ok", ok);
-        record.put("error_code", errorCode);
+        record.put("code", code);
+        record.put("error_code", ok ? null : code);
         record.put("duration_ms", durationMs);
         return record;
     }

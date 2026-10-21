@@ -6,14 +6,15 @@ import java.util.Map;
 /**
  * 工具注册表：持有多个工具版本，并依据路由与启用开关生成请求级快照。
  *
- * <p>内部以 {@code name@version} 为键保存工具，支持同一工具的多版本共存。</p>
+ * <p>内部以 {@code name@version} 为键保存工具，支持同一工具的多版本共存；
+ * 同时用 {@link NameProjection} 校验不同内部名不会投影成同一个模型名。</p>
  */
 public final class ToolRegistry {
 
     private final Map<String, ToolDefinition> tools = new LinkedHashMap<>();
 
     /**
-     * 注册一个工具。要求 name、version 非空且 timeout 为正；重复注册抛异常。
+     * 注册一个工具。要求 name、version 非空且 timeout 为正；重复注册或投影名碰撞抛异常。
      */
     public Dispose register(ToolDefinition tool) {
         if (tool.name() == null || tool.name().isBlank()
@@ -24,6 +25,15 @@ public final class ToolRegistry {
         String key = key(tool.name(), tool.version());
         if (tools.containsKey(key)) {
             throw new IllegalArgumentException("duplicate tool: " + key);
+        }
+        String modelName = NameProjection.toModelToolName(tool.name());
+        for (ToolDefinition existing : tools.values()) {
+            if (NameProjection.toModelToolName(existing.name()).equals(modelName)
+                    && !existing.name().equals(tool.name())) {
+                throw new IllegalArgumentException(
+                        "model tool-name collision: " + existing.name() + " 与 " + tool.name()
+                                + " 都投影为 " + modelName);
+            }
         }
         tools.put(key, tool);
         return () -> tools.remove(key);

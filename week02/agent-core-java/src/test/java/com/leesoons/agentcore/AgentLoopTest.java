@@ -56,6 +56,6 @@ class AgentLoopTest {
 
         String answer = loop.run(List.of(LoopMessage.of("user", "查天气")), snapshot, context, client);
 
-        assertEquals("工具调用轮数已达上限", answer);
+        assertEquals("Agent 循环停止: MAX_TURNS - Agent Loop 已达到最大轮数", answer);
     }
 }
