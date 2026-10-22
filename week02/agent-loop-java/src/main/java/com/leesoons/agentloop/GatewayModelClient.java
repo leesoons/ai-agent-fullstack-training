@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.leesoons.llmgateway.model.ChatMessage;
 import com.leesoons.llmgateway.model.ChatRequest;
 import com.leesoons.llmgateway.model.ChatResponse;
+import com.leesoons.llmgateway.model.TokenUsage;
 import com.leesoons.llmgateway.model.ToolCallMessage;
 import com.leesoons.llmgateway.service.GatewayService;
 import com.leesoons.agentcore.LoopMessage;
@@ -52,7 +53,11 @@ public final class GatewayModelClient implements ModelClient {
         if (response == null) {
             return new AssistantTurn("网关未返回响应", null);
         }
-        return new AssistantTurn(response.getContent(), toToolCalls(response.getToolCalls()));
+        TokenUsage usage = response.getUsage();
+        ModelClient.Usage turnUsage = usage == null
+                ? null
+                : new ModelClient.Usage(usage.getTotalTokens(), 0.0);
+        return new AssistantTurn(response.getContent(), toToolCalls(response.getToolCalls()), turnUsage);
     }
 
     private List<ChatMessage> toChatMessages(List<LoopMessage> messages) {

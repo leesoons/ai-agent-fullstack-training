@@ -53,6 +53,9 @@ public final class AgentLoop {
         List<LoopMessage> messages = new ArrayList<>(initial);
         while (true) {
             ModelClient.AssistantTurn turn = client.call(messages, snapshot.providerToolsFor(context.permissions()));
+            if (turn.usage() != null) {
+                guard.observeAssistantUsage(turn.usage().totalTokens(), turn.usage().costUsd());
+            }
             if (!turn.wantsTools()) {
                 return turn.content() == null ? "模型没有返回文本回复" : turn.content();
             }

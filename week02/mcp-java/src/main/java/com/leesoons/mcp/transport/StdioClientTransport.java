@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit;
  * <p>关联规则：请求带 {@code id}，响应按 {@code id} 回到对应的
  * {@link CompletableFuture}，因此多个请求可以并发在飞而不串线。</p>
  */
-public final class StdioClientTransport implements AutoCloseable {
+public final class StdioClientTransport implements McpTransport {
 
     private final ProcessBuilder processBuilder;
     private final ObjectMapper mapper = new ObjectMapper();

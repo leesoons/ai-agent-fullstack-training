@@ -3,14 +3,17 @@ package com.leesoons.mcp.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.leesoons.mcp.transport.McpTransport;
 import com.leesoons.mcp.transport.StdioClientTransport;
+import com.leesoons.mcp.transport.StreamableHttpClientTransport;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 最小 MCP 客户端：负责 stdio 握手、能力发现与工具调用。
+ * 最小 MCP 客户端：负责握手、能力发现与工具调用，底层传输可切换 stdio / Streamable HTTP。
  *
  * <p>它只做「协议管道」，不理解业务语义；命名投影与结果归一化交给 Host 层。</p>
  */
@@ -18,13 +21,25 @@ public final class McpClient implements AutoCloseable {
 
     private static final long DEFAULT_TIMEOUT_MILLIS = 5_000;
 
-    private final StdioClientTransport transport;
+    private final McpTransport transport;
     private final ObjectMapper mapper = new ObjectMapper();
     private final AtomicLong nextId = new AtomicLong(1);
     private String protocolVersion;
 
     public McpClient(List<String> command) {
-        this.transport = new StdioClientTransport(command);
+        this(new StdioClientTransport(command));
+    }
+
+    public McpClient(McpTransport transport) {
+        this.transport = transport;
+    }
+
+    /**
+     * 构造 Streamable HTTP 客户端：{@code endpoint} 为 MCP 单一端点，
+     * {@code headers} 通常携带 {@code Authorization: Bearer ...}。
+     */
+    public static McpClient http(String endpoint, Map<String, String> headers) {
+        return new McpClient(new StreamableHttpClientTransport(endpoint, headers));
     }
 
     /**

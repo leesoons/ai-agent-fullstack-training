@@ -14,11 +14,24 @@ public interface ModelClient {
 
     /**
      * 一轮模型输出：要么是最终文本，要么是一组工具调用提议。
+     *
+     * <p>{@code usage} 为本轮消耗的 Token / 费用，供 {@code LoopGuard} 累计预算；
+     * 无用量信息时为 {@code null}。</p>
      */
-    record AssistantTurn(String content, List<ToolCall> toolCalls) {
+    record AssistantTurn(String content, List<ToolCall> toolCalls, Usage usage) {
+
+        public AssistantTurn(String content, List<ToolCall> toolCalls) {
+            this(content, toolCalls, null);
+        }
 
         public boolean wantsTools() {
             return toolCalls != null && !toolCalls.isEmpty();
         }
+    }
+
+    /**
+     * 一轮模型的资源消耗。
+     */
+    record Usage(long totalTokens, double costUsd) {
     }
 }
