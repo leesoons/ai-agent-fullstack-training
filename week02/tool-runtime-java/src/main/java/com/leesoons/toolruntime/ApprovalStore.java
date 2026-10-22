@@ -118,8 +118,12 @@ public final class ApprovalStore {
      * <p>校验通过后以 CAS 语义抢锁（{@code APPROVED → EXECUTING}）并立即收尾为
      * {@code CONSUMED}，两个并发核销只会有一个成功。</p>
      */
-    public void consume(String approvalId, ToolDefinition tool,
-                        JsonNode arguments, ExecutionContext context) {
+    /**
+     * 非抛异常版核销：校验通过则以 CAS 语义抢锁并收尾，返回是否核销成功。
+     * 供 ToolRuntime 区分「尚未批准（可签发 PENDING 等人工）」与「已用/已拒/参数不符（应拒绝）」。
+     */
+    public boolean tryConsume(String approvalId, ToolDefinition tool,
+                              JsonNode arguments, ExecutionContext context) {
         synchronized (items) {
             Approval approval = items.get(approvalId == null ? "" : approvalId);
             boolean valid = approval != null
@@ -130,10 +134,21 @@ public final class ApprovalStore {
                     && approval.toolName().equals(tool.name())
                     && approval.digest().equals(digest(tool.name(), arguments));
             if (!valid) {
-                throw new PolicyDenied("APPROVAL_REQUIRED", "请确认本次操作的工具与参数，审批可能已失效");
+                return false;
             }
             approval.claim();
             approval.finish(ApprovalStatus.CONSUMED);
+            return true;
+        }
+    }
+
+    /**
+     * 核销审批：必须已批准、未过期，且与当前用户、租户、工具和参数完全一致。
+     */
+    public void consume(String approvalId, ToolDefinition tool,
+                        JsonNode arguments, ExecutionContext context) {
+        if (!tryConsume(approvalId, tool, arguments, context)) {
+            throw new PolicyDenied("APPROVAL_REQUIRED", "请确认本次操作的工具与参数，审批可能已失效");
         }
     }
 

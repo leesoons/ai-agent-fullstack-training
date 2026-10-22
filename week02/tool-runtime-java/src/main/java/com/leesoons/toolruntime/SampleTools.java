@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -13,7 +14,28 @@ public final class SampleTools {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /**
+     * 租户 → 客户资源前缀：预检阶段据此判定客户是否属于当前租户，防止越权读取。
+     */
+    private static final Map<String, String> TENANT_CUSTOMER_PREFIXES =
+            Map.of("acme", "cust-", "globex", "vip-");
+
     private SampleTools() {
+    }
+
+    /**
+     * 资源归属预检：客户编号必须落在当前租户的前缀内，否则拒绝。
+     */
+    private static void verifyCustomerScope(JsonNode params, ExecutionContext context) {
+        String tenantId = context.tenantId();
+        String prefix = TENANT_CUSTOMER_PREFIXES.get(tenantId);
+        if (prefix == null) {
+            throw new PolicyDenied("RESOURCE_SCOPE_DENIED", "当前租户未登记客户资源前缀");
+        }
+        String customerId = params.path("customer_id").asText("");
+        if (!customerId.startsWith(prefix)) {
+            throw new PolicyDenied("RESOURCE_SCOPE_DENIED", "客户不属于当前租户");
+        }
     }
 
     /**
@@ -81,7 +103,7 @@ public final class SampleTools {
                 SampleTools::queryCustomerDatabase,
                 new ToolPolicy(Effect.READ, RiskLevel.MEDIUM, "database:read",
                         false, false, false, 3.0, 1, true, true),
-                Set.of("customer-database"), null, null);
+                Set.of("customer-database"), SampleTools::verifyCustomerScope, null);
     }
 
     private static JsonNode queryWeather(JsonNode params, ExecutionContext context) {

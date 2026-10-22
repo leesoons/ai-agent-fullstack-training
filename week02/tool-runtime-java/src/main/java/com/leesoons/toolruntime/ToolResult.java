@@ -7,12 +7,17 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 /**
  * Runtime 回写给模型的消息：必须保留原始 tool_call_id，并标记为不可信数据。
  */
-public record ToolResult(String toolCallId, String name, String content, boolean isError, String errorCode) {
+public record ToolResult(String toolCallId, String name, String content, boolean isError,
+                           String errorCode, String approvalId) {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    public ToolResult(String toolCallId, String name, String content, boolean isError, String errorCode) {
+        this(toolCallId, name, content, isError, errorCode, null);
+    }
+
     public ToolResult(String toolCallId, String name, String content, boolean isError) {
-        this(toolCallId, name, content, isError, null);
+        this(toolCallId, name, content, isError, null, null);
     }
 
     /**

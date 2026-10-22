@@ -227,7 +227,9 @@ public class GatewayService {
         response.setContent(result.response.getContent());
         response.setToolCalls(result.response.getToolCalls());
         response.setParsed(result.response.getParsed());
-        response.setUsage(new TokenUsage(event.getInputTokens(), event.getOutputTokens(), event.getCachedTokens()));
+        TokenUsage usage = new TokenUsage(event.getInputTokens(), event.getOutputTokens(), event.getCachedTokens());
+        usage.setCostUsd(event.getCostUsd());
+        response.setUsage(usage);
         response.setLatencyMs((long) event.getLatencyMs());
         response.setAttempts(1 + event.getRetries());
         response.setRetries(event.getRetries());

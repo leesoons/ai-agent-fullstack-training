@@ -4,10 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.leesoons.llmgateway.service.GatewayService;
 import com.leesoons.agentcore.AgentLoop;
 import com.leesoons.agentcore.ModelClient;
+import com.leesoons.toolruntime.ApprovalStore;
+import com.leesoons.toolruntime.AuditSink;
+import com.leesoons.toolruntime.PermissionEngine;
 import com.leesoons.toolruntime.SampleTools;
 import com.leesoons.toolruntime.ToolRegistry;
 import com.leesoons.toolruntime.ToolRuntime;
 import com.leesoons.toolruntime.ToolSnapshot;
+import com.leesoons.toolruntime.TraceSink;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -34,14 +38,21 @@ public class AgentConfig {
     }
 
     @Bean
-    public ToolRuntime toolRuntime() {
-        return new ToolRuntime(Map.of(), Set.of("weather-service", "customer-database"));
+    public TraceSink traceSink() {
+        return new TraceSink();
     }
 
     @Bean
-    public AgentLoop agentLoop(ToolRuntime runtime,
+    public ToolRuntime toolRuntime(TraceSink traceSink) {
+        return new ToolRuntime(Map.of(), Set.of("weather-service", "customer-database"),
+                new PermissionEngine(), new ApprovalStore(), new AuditSink(),
+                new ObjectMapper(), null, traceSink);
+    }
+
+    @Bean
+    public AgentLoop agentLoop(ToolRuntime runtime, TraceSink traceSink,
                                @Value("${agent.max-rounds:4}") int maxRounds) {
-        return new AgentLoop(runtime, maxRounds);
+        return new AgentLoop(runtime, maxRounds, traceSink);
     }
 
     @Bean

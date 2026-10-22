@@ -33,6 +33,7 @@ public final class ToolRuntime implements AutoCloseable {
     private final PermissionEngine permissionEngine;
     private final ApprovalStore approvals;
     private final AuditSink audit;
+    private final TraceSink traceSink;
     private final Map<String, Object> locks = new LinkedHashMap<>();
     private final ObjectMapper objectMapper;
     private final JsonSchemaFactory schemaFactory;
@@ -76,11 +77,24 @@ public final class ToolRuntime implements AutoCloseable {
                        AuditSink audit,
                        ObjectMapper objectMapper,
                        ExecutorService executor) {
+        this(enabled, healthyDependencies, permissionEngine, approvals, audit, objectMapper, executor,
+                new TraceSink());
+    }
+
+    public ToolRuntime(Map<String, Boolean> enabled,
+                       Set<String> healthyDependencies,
+                       PermissionEngine permissionEngine,
+                       ApprovalStore approvals,
+                       AuditSink audit,
+                       ObjectMapper objectMapper,
+                       ExecutorService executor,
+                       TraceSink traceSink) {
         this.enabled = enabled;
         this.healthyDependencies = healthyDependencies == null ? Set.of() : healthyDependencies;
         this.permissionEngine = permissionEngine == null ? new PermissionEngine() : permissionEngine;
         this.approvals = approvals == null ? new ApprovalStore() : approvals;
         this.audit = audit == null ? new AuditSink() : audit;
+        this.traceSink = traceSink == null ? new TraceSink() : traceSink;
         this.objectMapper = objectMapper == null ? new ObjectMapper() : objectMapper;
         this.schemaFactory = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012);
         this.executor = executor == null ? Executors.newVirtualThreadPerTaskExecutor() : executor;
@@ -100,6 +114,8 @@ public final class ToolRuntime implements AutoCloseable {
             prepared = prepare(snapshot, call, context);
         } catch (PolicyDenied e) {
             return finalizeDenied(call, context, e.code(), e.getMessage(), startedAt);
+        } catch (AwaitingApprovalException e) {
+            return awaitingApproval(call, context, e.approvalId(), startedAt);
         }
 
         ExecutionOutcome outcome = execute(prepared, context);
@@ -161,10 +177,18 @@ public final class ToolRuntime implements AutoCloseable {
         }
 
         if (policy.requiresApproval()) {
-            try {
-                approvals.consume(context.approvalId(), tool, params, context);
-            } catch (PolicyDenied e) {
-                throw e;
+            String approvalId = context.approvalId() != null ? context.approvalId() : call.id();
+            if (!approvals.tryConsume(approvalId, tool, params, context)) {
+                Approval existing = approvals.getApproval(approvalId);
+                if (existing == null) {
+                    // 首次遇到：签发 PENDING 审批单，由 Agent Loop 停下等待人工决定
+                    approvals.createApproval(approvalId, context.userId(), context.tenantId(),
+                            tool.name(), params, 300);
+                } else if (existing.status() != ApprovalStatus.PENDING) {
+                    // 已决定 / 已用 / 过期 / 参数不符：直接拒绝，不重复签发
+                    throw new PolicyDenied("APPROVAL_REQUIRED", "审批已失效或不匹配，请重新确认");
+                }
+                throw new AwaitingApprovalException(approvalId);
             }
         }
         if (policy.requiresConfirmation() && context.mode() != PermissionMode.BYPASS_PERMISSIONS) {
@@ -193,6 +217,8 @@ public final class ToolRuntime implements AutoCloseable {
         ToolResult result = new ToolResult(
                 prepared.call().id(), prepared.tool().name(), output.toString(), false, null);
         audit.write(auditRecord(prepared.call(), context, prepared.tool().name(), true, code, startedAt));
+        traceSink.record(new TraceEvent(context.traceId(), "tool.execution_end",
+                prepared.tool().name(), code, null));
         return result;
     }
 
@@ -329,12 +355,29 @@ public final class ToolRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * 审批未满足时的暂停产物：不是错误，而是带审批单 id 的「等待人工」信号。
+     */
+    private ToolResult awaitingApproval(ToolCall call, ExecutionContext context,
+                                        String approvalId, long startedAt) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("code", "AWAITING_APPROVAL");
+        node.put("approval_id", approvalId);
+        node.put("message", "工具调用正在等待人工审批");
+        audit.write(auditRecord(call, context, call.name(), false, "AWAITING_APPROVAL", startedAt));
+        traceSink.record(new TraceEvent(context.traceId(), "tool.execution_end",
+                call.name(), "AWAITING_APPROVAL", approvalId));
+        return new ToolResult(call.id(), call.name(), node.toString(), false, "AWAITING_APPROVAL", approvalId);
+    }
+
     private ToolResult finalizeDenied(ToolCall call, ExecutionContext context,
                                       String code, String message, long startedAt) {
         ObjectNode node = objectMapper.createObjectNode();
         node.put("code", code);
         node.put("message", message);
         audit.write(auditRecord(call, context, call.name(), false, code, startedAt));
+        traceSink.record(new TraceEvent(context.traceId(), "tool.execution_end",
+                call.name(), code, message));
         return new ToolResult(call.id(), call.name(), node.toString(), true, code);
     }
 

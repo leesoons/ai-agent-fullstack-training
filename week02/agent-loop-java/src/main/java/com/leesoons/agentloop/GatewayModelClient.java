@@ -56,7 +56,7 @@ public final class GatewayModelClient implements ModelClient {
         TokenUsage usage = response.getUsage();
         ModelClient.Usage turnUsage = usage == null
                 ? null
-                : new ModelClient.Usage(usage.getTotalTokens(), 0.0);
+                : new ModelClient.Usage(usage.getTotalTokens(), usage.getCostUsd());
         return new AssistantTurn(response.getContent(), toToolCalls(response.getToolCalls()), turnUsage);
     }
 

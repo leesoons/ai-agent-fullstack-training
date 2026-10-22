@@ -77,8 +77,9 @@ class ToolRuntimeTest {
 
         ToolResult result = runtime.invoke(snapshot, new ToolCall("c1", "delete_order", "{}"), ctx);
 
-        assertTrue(result.isError());
-        assertTrue(result.content().contains("APPROVAL_REQUIRED"));
+        // 高风险需审批工具在未获批准时不再是错误，而是签发 PENDING 并停下等人
+        assertFalse(result.isError());
+        assertTrue(result.content().contains("AWAITING_APPROVAL"));
     }
 
     @Test

@@ -74,6 +74,26 @@ class GatewayServiceTest {
     }
 
     @Test
+    void responseCarriesComputedCostUsd() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.start();
+            server.enqueue(jsonResponse("{\"id\":\"resp_1\",\"output_text\":\"hello\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":2}}}"));
+
+            GatewayProperties cfg = openAiConfig(server);
+            GatewayProperties.Price price = new GatewayProperties.Price();
+            price.setInputPerMillion(100.0);
+            price.setOutputPerMillion(200.0);
+            cfg.getPricing().put("deepseek-v4-pro", price);
+            Harness h = harness(cfg);
+
+            ChatResponse resp = h.gateway().chat(req("deepseek-v4-pro", "hi"), "test").block();
+
+            // freshInput=8, cached=2, output=5 -> 8*100/1e6 + 2*100/1e6 + 5*200/1e6 = 0.002
+            assertThat(resp.getUsage().getCostUsd()).isEqualTo(0.002);
+        }
+    }
+
+    @Test
     void anthropicMessagesAdapterRoutesAndNormalizesUsage() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.start();

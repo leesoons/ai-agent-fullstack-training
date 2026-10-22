@@ -9,6 +9,8 @@ import com.leesoons.toolruntime.ToolCall;
 import com.leesoons.toolruntime.ToolResult;
 import com.leesoons.toolruntime.ToolRuntime;
 import com.leesoons.toolruntime.ToolSnapshot;
+import com.leesoons.toolruntime.TraceEvent;
+import com.leesoons.toolruntime.TraceSink;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,17 +27,27 @@ public final class AgentLoop {
 
     private final ToolRuntime runtime;
     private final LoopGuard guard;
+    private final TraceSink traceSink;
 
     /**
      * 仅限制轮数的便捷构造：其余预算维度给足余量。
      */
     public AgentLoop(ToolRuntime runtime, int maxRounds) {
-        this(runtime, new LoopGuard(LoopBudgetConfig.ofTurns(maxRounds)));
+        this(runtime, new LoopGuard(LoopBudgetConfig.ofTurns(maxRounds)), new TraceSink());
     }
 
     public AgentLoop(ToolRuntime runtime, LoopGuard guard) {
+        this(runtime, guard, new TraceSink());
+    }
+
+    public AgentLoop(ToolRuntime runtime, int maxRounds, TraceSink traceSink) {
+        this(runtime, new LoopGuard(LoopBudgetConfig.ofTurns(maxRounds)), traceSink);
+    }
+
+    public AgentLoop(ToolRuntime runtime, LoopGuard guard, TraceSink traceSink) {
         this.runtime = runtime;
         this.guard = guard;
+        this.traceSink = traceSink == null ? new TraceSink() : traceSink;
     }
 
     /**
@@ -57,9 +69,11 @@ public final class AgentLoop {
                 guard.observeAssistantUsage(turn.usage().totalTokens(), turn.usage().costUsd());
             }
             if (!turn.wantsTools()) {
+                traceSink.record(new TraceEvent(context.traceId(), "loop.final_answer", null, "OK", null));
                 return turn.content() == null ? "模型没有返回文本回复" : turn.content();
             }
             messages.add(LoopMessage.assistant(turn.toolCalls()));
+            int executed = 0;
             for (ToolCall call : turn.toolCalls()) {
                 LoopGuard.GuardDecision decision = guard.beforeToolCall(call.name(), call.argumentsJson());
                 if (!decision.allow()) {
@@ -67,11 +81,23 @@ public final class AgentLoop {
                     continue;
                 }
                 ToolResult result = runtime.invoke(snapshot, call, context);
+                if ("AWAITING_APPROVAL".equals(result.errorCode())) {
+                    messages.add(LoopMessage.tool(result.toolCallId(), result.toModelMessage()));
+                    traceSink.record(new TraceEvent(context.traceId(), "loop.awaiting_approval",
+                            call.name(), "AWAITING_APPROVAL", result.approvalId()));
+                    LoopGuard.StopDecision stop = guard.shouldStop(result.approvalId());
+                    return "Agent 循环停止: " + stop.code() + " - " + stop.reason()
+                            + " (approvalId=" + result.approvalId() + ")";
+                }
                 messages.add(LoopMessage.tool(result.toolCallId(), result.toModelMessage()));
+                executed++;
             }
+            traceSink.record(new TraceEvent(context.traceId(), "loop.turn_end",
+                    null, "TOOLS_EXECUTED", "tools=" + executed));
             guard.observeTurn();
             LoopGuard.StopDecision stop = guard.shouldStop();
             if (stop.stop()) {
+                traceSink.record(new TraceEvent(context.traceId(), "loop.stop", null, stop.code(), stop.reason()));
                 return "Agent 循环停止: " + stop.code() + " - " + stop.reason();
             }
         }

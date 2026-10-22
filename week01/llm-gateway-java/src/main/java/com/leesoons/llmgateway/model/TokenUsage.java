@@ -9,6 +9,7 @@ public class TokenUsage {
     private int outputTokens;
     private int cachedInputTokens;
     private int totalTokens;
+    private double costUsd;
 
     public TokenUsage() {
     }
@@ -25,6 +26,7 @@ public class TokenUsage {
         this.outputTokens += other.outputTokens;
         this.cachedInputTokens += other.cachedInputTokens;
         this.totalTokens = this.inputTokens + this.outputTokens;
+        this.costUsd += other.costUsd;
     }
 
     public int getInputTokens() {
@@ -57,5 +59,13 @@ public class TokenUsage {
 
     public void setTotalTokens(int totalTokens) {
         this.totalTokens = totalTokens;
+    }
+
+    public double getCostUsd() {
+        return costUsd;
+    }
+
+    public void setCostUsd(double costUsd) {
+        this.costUsd = costUsd;
     }
 }
