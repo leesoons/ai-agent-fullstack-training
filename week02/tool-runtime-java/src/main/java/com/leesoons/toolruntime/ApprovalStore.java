@@ -2,8 +2,13 @@ package com.leesoons.toolruntime;
 
 import com.fasterxml.jackson.core.io.JsonStringEncoder;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -26,18 +31,36 @@ import java.util.Map;
 public final class ApprovalStore {
 
     private final Map<String, Approval> items = new LinkedHashMap<>();
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final Path dataFile;
+
+    public ApprovalStore() {
+        this(null);
+    }
+
+    /**
+     * 可选 JSONL 持久化：传入 dataDir 后落盘 {@code approvals.jsonl}，
+     * 重启后恢复未过期审批单；dataDir 为 {@code null} 时保持纯内存。
+     */
+    public ApprovalStore(Path dataDir) {
+        this.dataFile = dataDir == null ? null : dataDir.resolve("approvals.jsonl");
+        loadFromDisk();
+    }
 
     /**
      * 预授权：签发与调用参数绑定、带有效期且立即生效的一次性审批凭证。
      */
     public void approve(String approvalId, String userId, String tenantId,
                         String toolName, JsonNode arguments, long ttlSeconds) {
-        Approval approval = new Approval(
-                approvalId, userId, tenantId, toolName,
-                digest(toolName, arguments),
-                System.currentTimeMillis() + ttlSeconds * 1000);
-        approval.decide(ApprovalStatus.APPROVED, "system");
-        items.put(approvalId, approval);
+        synchronized (items) {
+            Approval approval = new Approval(
+                    approvalId, userId, tenantId, toolName,
+                    digest(toolName, arguments),
+                    System.currentTimeMillis() + ttlSeconds * 1000);
+            approval.decide(ApprovalStatus.APPROVED, "system");
+            persist(approval);
+            items.put(approvalId, approval);
+        }
     }
 
     /**
@@ -53,12 +76,15 @@ public final class ApprovalStore {
      */
     public Approval createApproval(String approvalId, String userId, String tenantId,
                                    String toolName, JsonNode arguments, long ttlSeconds) {
-        Approval approval = new Approval(
-                approvalId, userId, tenantId, toolName,
-                digest(toolName, arguments),
-                System.currentTimeMillis() + ttlSeconds * 1000);
-        items.put(approvalId, approval);
-        return approval;
+        synchronized (items) {
+            Approval approval = new Approval(
+                    approvalId, userId, tenantId, toolName,
+                    digest(toolName, arguments),
+                    System.currentTimeMillis() + ttlSeconds * 1000);
+            persist(approval);
+            items.put(approvalId, approval);
+            return approval;
+        }
     }
 
     /**
@@ -81,6 +107,7 @@ public final class ApprovalStore {
                 throw new IllegalStateException("Approval is missing, expired, or already decided");
             }
             approval.decide(approve ? ApprovalStatus.APPROVED : ApprovalStatus.REJECTED, actor);
+            persist(approval);
             return approval;
         }
     }
@@ -96,6 +123,7 @@ public final class ApprovalStore {
                 return false;
             }
             approval.claim();
+            persist(approval);
             return true;
         }
     }
@@ -108,6 +136,7 @@ public final class ApprovalStore {
             Approval approval = items.get(approvalId);
             if (approval != null && approval.status() == ApprovalStatus.EXECUTING) {
                 approval.finish(success ? ApprovalStatus.CONSUMED : ApprovalStatus.FAILED);
+                persist(approval);
             }
         }
     }
@@ -138,6 +167,7 @@ public final class ApprovalStore {
             }
             approval.claim();
             approval.finish(ApprovalStatus.CONSUMED);
+            persist(approval);
             return true;
         }
     }
@@ -150,6 +180,83 @@ public final class ApprovalStore {
         if (!tryConsume(approvalId, tool, arguments, context)) {
             throw new PolicyDenied("APPROVAL_REQUIRED", "请确认本次操作的工具与参数，审批可能已失效");
         }
+    }
+
+    /**
+     * 落盘当前审批单的最新快照；写入失败即抛错，保证「磁盘不超前于内存」的恢复语义。
+     */
+    private void persist(Approval approval) {
+        if (dataFile == null) {
+            return;
+        }
+        ApprovalSnapshot snapshot = new ApprovalSnapshot(
+                approval.approvalId(), approval.userId(), approval.tenantId(),
+                approval.toolName(), approval.digest(), approval.expiresAtMillis(),
+                approval.status(), approval.decidedBy());
+        try {
+            Files.createDirectories(dataFile.getParent());
+            String line = mapper.writeValueAsString(snapshot) + System.lineSeparator();
+            Files.writeString(dataFile, line, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            throw new IllegalStateException("审批单落盘失败，关键数据不可静默丢失: " + approval.approvalId(), e);
+        }
+    }
+
+    private void loadFromDisk() {
+        if (dataFile == null || !Files.exists(dataFile)) {
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(dataFile, StandardCharsets.UTF_8);
+            for (String line : lines) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                ApprovalSnapshot snapshot = mapper.readValue(line, ApprovalSnapshot.class);
+                items.put(snapshot.approvalId(), restore(snapshot));
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("审批单落盘读取失败: " + dataFile, e);
+        }
+    }
+
+    /**
+     * 从落盘快照重建审批单；{@code EXECUTING} 是进程死亡时的中间态（结果未知），
+     * 保守归位为 {@code FAILED}，宁可让用户重新审批也不冒重复执行的风险。
+     */
+    private Approval restore(ApprovalSnapshot snapshot) {
+        Approval approval = new Approval(
+                snapshot.approvalId(), snapshot.userId(), snapshot.tenantId(),
+                snapshot.toolName(), snapshot.digest(), snapshot.expiresAtMillis());
+        switch (snapshot.status()) {
+            case PENDING -> { }
+            case APPROVED, REJECTED -> approval.decide(snapshot.status(), snapshot.decidedBy());
+            case CONSUMED, FAILED -> {
+                approval.decide(ApprovalStatus.APPROVED, snapshot.decidedBy());
+                approval.claim();
+                approval.finish(snapshot.status());
+            }
+            case EXECUTING -> {
+                approval.decide(ApprovalStatus.APPROVED, snapshot.decidedBy());
+                approval.finish(ApprovalStatus.FAILED);
+            }
+        }
+        return approval;
+    }
+
+    /**
+     * 审批单落盘快照：与 {@link Approval} 一一对应，仅用于 JSONL 序列化与恢复。
+     */
+    private record ApprovalSnapshot(
+            String approvalId,
+            String userId,
+            String tenantId,
+            String toolName,
+            String digest,
+            long expiresAtMillis,
+            ApprovalStatus status,
+            String decidedBy) {
     }
 
     /**

@@ -192,6 +192,14 @@ public class GatewayController {
         return Mono.just(result);
     }
 
+    @GetMapping("/admin/usage/summary")
+    public Mono<Map<String, Object>> usageSummary() {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("by_tenant", usageService.aggregateByTenant());
+        result.put("by_model", usageService.aggregateByModel());
+        return Mono.just(result);
+    }
+
     @GetMapping("/admin/routes")
     public Mono<Map<String, Object>> routes() {
         Map<String, Object> models = new java.util.LinkedHashMap<>();

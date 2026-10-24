@@ -7,6 +7,7 @@ public class UsageEvent {
 
     private String requestId;
     private String apiKeyHash;
+    private String tenantId;
     private String runId;
     private String stepId;
     private String callId;
@@ -43,6 +44,14 @@ public class UsageEvent {
 
     public void setApiKeyHash(String apiKeyHash) {
         this.apiKeyHash = apiKeyHash;
+    }
+
+    public String getTenantId() {
+        return tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId;
     }
 
     public String getRunId() {

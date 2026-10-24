@@ -439,6 +439,7 @@ public class GatewayService {
         UsageEvent event = new UsageEvent();
         event.setRequestId(requestId);
         event.setApiKeyHash(identity);
+        event.setTenantId(identity);
         event.setRunId(trace.runId());
         event.setStepId(trace.stepId());
         event.setCallId(requestId);

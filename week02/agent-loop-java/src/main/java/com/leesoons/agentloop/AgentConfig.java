@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 
@@ -38,14 +39,16 @@ public class AgentConfig {
     }
 
     @Bean
-    public TraceSink traceSink() {
-        return new TraceSink();
+    public TraceSink traceSink(@Value("${agent.data-dir:}") String dataDir) {
+        return dataDir == null || dataDir.isBlank() ? new TraceSink() : new TraceSink(Path.of(dataDir));
     }
 
     @Bean
-    public ToolRuntime toolRuntime(TraceSink traceSink) {
+    public ToolRuntime toolRuntime(TraceSink traceSink, @Value("${agent.data-dir:}") String dataDir) {
+        ApprovalStore approvals = dataDir == null || dataDir.isBlank()
+                ? new ApprovalStore() : new ApprovalStore(Path.of(dataDir));
         return new ToolRuntime(Map.of(), Set.of("weather-service", "customer-database"),
-                new PermissionEngine(), new ApprovalStore(), new AuditSink(),
+                new PermissionEngine(), approvals, new AuditSink(),
                 new ObjectMapper(), null, traceSink);
     }
 

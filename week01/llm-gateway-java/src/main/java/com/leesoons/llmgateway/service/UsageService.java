@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.leesoons.llmgateway.config.GatewayProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -13,7 +14,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.stream.Collectors;
 
 /**
  * 进程内用量账本，可选 JSONL 落盘。配置 data-dir 后重启可恢复近期账本。
@@ -27,9 +30,16 @@ public class UsageService {
     private final GatewayProperties config;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Deque<UsageEvent> events = new ConcurrentLinkedDeque<>();
+    private final PriceProvider priceProvider;
 
     public UsageService(GatewayProperties config) {
+        this(config, new ConfigPriceProvider(config));
+    }
+
+    @Autowired
+    public UsageService(GatewayProperties config, PriceProvider priceProvider) {
         this.config = config;
+        this.priceProvider = priceProvider;
         loadFromDisk();
     }
 
@@ -46,8 +56,28 @@ public class UsageService {
         return events.stream().limit(bounded).toList();
     }
 
+    /**
+     * 按租户聚合累计成本，回答「哪个租户花了多少钱」。
+     */
+    public Map<String, Double> aggregateByTenant() {
+        return events.stream().collect(Collectors.groupingBy(
+                event -> event.getTenantId() == null ? "unknown" : event.getTenantId(),
+                Collectors.summingDouble(UsageEvent::getCostUsd)));
+    }
+
+    /**
+     * 按模型聚合累计成本，回答「哪个模型最烧钱」。
+     */
+    public Map<String, Double> aggregateByModel() {
+        return events.stream().collect(Collectors.groupingBy(
+                event -> event.getUpstreamModel() != null
+                        ? event.getUpstreamModel()
+                        : (event.getRequestedModel() == null ? "unknown" : event.getRequestedModel()),
+                Collectors.summingDouble(UsageEvent::getCostUsd)));
+    }
+
     public double calculateCost(String model, int inputTokens, int outputTokens, int cachedTokens) {
-        GatewayProperties.Price price = config.getPricing().get(model);
+        GatewayProperties.Price price = priceProvider.price(model);
         if (price == null) {
             return 0;
         }
