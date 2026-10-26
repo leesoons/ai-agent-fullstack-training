@@ -46,6 +46,7 @@ public final class SampleTools {
         PluginManager manager = new PluginManager(new PluginContext(registry));
         manager.load(new WeatherToolsPlugin());
         manager.load(new CustomerDatabaseToolsPlugin());
+        manager.load(new TransferToolsPlugin());
         return registry;
     }
 

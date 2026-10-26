@@ -20,6 +20,7 @@ public final class ResultProjector {
             "token|secret|password|authorization|api_?key|credential|cookie|session|private_?key|access_?key",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern EMAIL = Pattern.compile("[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}");
+    private static final Pattern ACCOUNT = Pattern.compile("ACC-[A-Z]-[0-9]{6}");
 
     private static final int MAX_DEPTH = 8;
     private static final int MAX_ITEMS = 50;
@@ -37,6 +38,7 @@ public final class ResultProjector {
         }
         if (node.isTextual()) {
             String text = EMAIL.matcher(node.textValue()).replaceAll("***@***");
+            text = ACCOUNT.matcher(text).replaceAll("***");
             return NODES.textNode(text);
         }
         if (node.isArray()) {
